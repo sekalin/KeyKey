@@ -36,6 +36,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "keykey-tools"
+version = "2.0.0"
+dependencies = [
+ "keykey-core",
+ "keykey-tsf",
+]
+
+[[package]]
 name = "keykey-tsf"
 version = "2.0.0"
 dependencies = [

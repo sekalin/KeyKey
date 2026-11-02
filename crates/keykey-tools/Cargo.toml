@@ -1,0 +1,11 @@
+[package]
+name = "keykey-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Management, installation, and testing CLI for KeyKey"
+
+[dependencies]
+keykey-core = { path = "../keykey-core" }
+keykey-tsf = { path = "../keykey-tsf" }

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/keykey-core",
     "crates/keykey-tsf",
+    "crates/keykey-tools",
 ]
 
 [workspace.package]
