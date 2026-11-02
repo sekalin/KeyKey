@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/keykey-core",
+    "crates/keykey-tsf",
+]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+authors = ["KeyKey Developers"]
+license = "BSD-3-Clause"
+repository = "https://github.com/sekalin/KeyKey"

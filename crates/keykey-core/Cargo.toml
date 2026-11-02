@@ -1,0 +1,12 @@
+[package]
+name = "keykey-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core engine, CIN table parser, and Bopomofo/Phonetic state machine for KeyKey"
+
+[dependencies]
+encoding_rs = "0.8"
+
+[dev-dependencies]

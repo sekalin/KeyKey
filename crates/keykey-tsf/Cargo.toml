@@ -1,0 +1,23 @@
+[package]
+name = "keykey-tsf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Windows 11 TSF (Text Services Framework) Text Input Processor (TIP) for KeyKey"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+keykey-core = { path = "../keykey-core" }
+windows-core = "0.58"
+windows = { version = "0.58", features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_UI_TextServices",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
