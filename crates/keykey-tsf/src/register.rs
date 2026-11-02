@@ -22,6 +22,19 @@ pub fn get_module_path() -> Result<Vec<u16>> {
         return Err(windows::core::Error::from_win32());
     }
     buffer.truncate(len as usize);
+
+    // If running from an exe (e.g. keykey-tools.exe), resolve keykey_tsf.dll in the same directory
+    let path_str = String::from_utf16_lossy(&buffer);
+    let path = std::path::Path::new(&path_str);
+    if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("exe")) {
+        let dll_candidate = path.with_file_name("keykey_tsf.dll");
+        if dll_candidate.exists() {
+            if let Some(dll_str) = dll_candidate.to_str() {
+                return Ok(to_wide(dll_str));
+            }
+        }
+    }
+
     buffer.push(0); // null terminator
     Ok(buffer)
 }
@@ -107,6 +120,9 @@ pub fn unregister_com_keys_with_clsid(root_key: HKEY, prefix: &str, clsid: &GUID
 }
 
 pub fn register_server() -> Result<()> {
+    unsafe {
+        let _ = CoInitialize(None);
+    }
     let dll_path = get_module_path()?;
 
     // 1. Register COM InProcServer32 (HKCR if elevated, otherwise fallback to HKCU)
@@ -166,6 +182,9 @@ pub fn register_server() -> Result<()> {
 }
 
 pub fn unregister_server() -> Result<()> {
+    unsafe {
+        let _ = CoInitialize(None);
+    }
     // 1. Unregister TSF Categories
     unsafe {
         if let Ok(cat_mgr) =

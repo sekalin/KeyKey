@@ -3,6 +3,9 @@ use keykey_core::cin::CinTable;
 use keykey_core::engine::{EngineAction, KeyCode, KeyKeyEngine};
 
 pub fn run(args: &[String]) -> i32 {
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitialize(None);
+    }
     let command = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
     match command {
