@@ -350,4 +350,164 @@ j ㄨ
         let actions = engine.handle_key(KeyCode::Char('1'));
         assert!(actions.contains(&EngineAction::Commit("逋".to_string())));
     }
+
+    #[test]
+    fn test_engine_mode_toggle() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        assert_eq!(engine.mode, InputMode::Bopomofo);
+        assert_eq!(engine.toggle_mode(), InputMode::English);
+
+        // In English mode, keys are ignored
+        assert_eq!(engine.handle_key(KeyCode::Char('a')), vec![EngineAction::Ignored]);
+
+        assert_eq!(engine.toggle_mode(), InputMode::Bopomofo);
+    }
+
+    #[test]
+    fn test_engine_editing_keys() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        // Backspace, Enter, Space, Escape on empty buffer
+        assert_eq!(engine.handle_key(KeyCode::Backspace), vec![EngineAction::Ignored]);
+        assert_eq!(engine.handle_key(KeyCode::Enter), vec![EngineAction::Ignored]);
+        assert_eq!(engine.handle_key(KeyCode::Space), vec![EngineAction::Ignored]);
+        assert_eq!(engine.handle_key(KeyCode::Escape), vec![EngineAction::Ignored]);
+        assert_eq!(engine.handle_key(KeyCode::Down), vec![EngineAction::Ignored]);
+
+        // Non-bopomofo key on empty buffer
+        assert_eq!(engine.handle_key(KeyCode::Char('!')), vec![EngineAction::Ignored]);
+
+        // Feed '1' (ㄅ), then backspace to empty
+        engine.handle_key(KeyCode::Char('1'));
+        let actions = engine.handle_key(KeyCode::Backspace);
+        assert_eq!(
+            actions,
+            vec![
+                EngineAction::UpdateComposition {
+                    display_text: String::new(),
+                    cursor_pos: 0,
+                },
+                EngineAction::HideCandidates,
+            ]
+        );
+
+        // Feed '1' and 'j', then backspace partial
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        let actions = engine.handle_key(KeyCode::Backspace);
+        assert_eq!(
+            actions,
+            vec![EngineAction::UpdateComposition {
+                display_text: "ㄅ".to_string(),
+                cursor_pos: 1,
+            }]
+        );
+
+        // Feed non-bopomofo char while composing -> consumed
+        assert_eq!(engine.handle_key(KeyCode::Char('!')), vec![EngineAction::Consumed]);
+
+        // Escape cancels composition
+        let actions = engine.handle_key(KeyCode::Escape);
+        assert_eq!(
+            actions,
+            vec![
+                EngineAction::UpdateComposition {
+                    display_text: String::new(),
+                    cursor_pos: 0,
+                },
+                EngineAction::HideCandidates,
+            ]
+        );
+
+        // Enter on non-empty buffer commits raw phonetic symbols
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        let actions = engine.handle_key(KeyCode::Enter);
+        assert!(actions.contains(&EngineAction::Commit("ㄅㄨ".to_string())));
+    }
+
+    #[test]
+    fn test_engine_candidate_navigation_and_cancel() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        engine.handle_key(KeyCode::Char('4')); // ㄅㄨˋ -> candidate list open
+
+        // Navigation when only 1 page
+        assert_eq!(engine.handle_key(KeyCode::Down), vec![EngineAction::Consumed]);
+        assert_eq!(engine.handle_key(KeyCode::Up), vec![EngineAction::Consumed]);
+
+        // Other key when candidate list open
+        assert_eq!(engine.handle_key(KeyCode::Char('z')), vec![EngineAction::Consumed]);
+
+        // Escape from candidate list hides candidates and keeps composition
+        let actions = engine.handle_key(KeyCode::Escape);
+        assert_eq!(
+            actions,
+            vec![
+                EngineAction::HideCandidates,
+                EngineAction::UpdateComposition {
+                    display_text: "ㄅㄨˋ".to_string(),
+                    cursor_pos: 3,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_engine_candidate_multipage() {
+        // Create CIN with 12 candidates for code 1j4
+        let mut table = CinTable::new();
+        table.selkey = "123456789".to_string();
+        table.key_names.insert('1', "ㄅ".to_string());
+        table.key_names.insert('j', "ㄨ".to_string());
+        table.key_names.insert('4', "ˋ".to_string());
+        let cands: Vec<String> = (1..=12).map(|i| format!("字{}", i)).collect();
+        table.char_defs.insert("1j4".to_string(), cands);
+
+        let mut engine = KeyKeyEngine::new(table);
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        engine.handle_key(KeyCode::Char('4')); // candidate list page 0 (9 items)
+
+        // Down / PageDown -> flips to page 1
+        let actions = engine.handle_key(KeyCode::Down);
+        assert!(actions.iter().any(|a| matches!(a, EngineAction::ShowCandidates { page: 1, .. })));
+
+        // Up / PageUp -> flips back to page 0
+        let actions = engine.handle_key(KeyCode::Up);
+        assert!(actions.iter().any(|a| matches!(a, EngineAction::ShowCandidates { page: 0, .. })));
+
+        // PageDown
+        let actions = engine.handle_key(KeyCode::PageDown);
+        assert!(actions.iter().any(|a| matches!(a, EngineAction::ShowCandidates { page: 1, .. })));
+
+        // PageUp
+        let actions = engine.handle_key(KeyCode::PageUp);
+        assert!(actions.iter().any(|a| matches!(a, EngineAction::ShowCandidates { page: 0, .. })));
+    }
+
+    #[test]
+    fn test_engine_no_candidates_syllable() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        // Type '1' (ㄅ) + '4' (ˋ) -> ㄅˋ (not in TEST_CIN)
+        engine.handle_key(KeyCode::Char('1'));
+        let actions = engine.handle_key(KeyCode::Char('4'));
+
+        // Should update composition without opening candidates
+        assert_eq!(
+            actions,
+            vec![EngineAction::UpdateComposition {
+                display_text: "ㄅˋ".to_string(),
+                cursor_pos: 2,
+            }]
+        );
+    }
 }

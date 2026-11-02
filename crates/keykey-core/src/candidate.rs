@@ -26,6 +26,10 @@ impl CandidateList {
         self.candidates.is_empty()
     }
 
+    pub fn all_candidates(&self) -> &[String] {
+        &self.candidates
+    }
+
     pub fn total_candidates(&self) -> usize {
         self.candidates.len()
     }
@@ -98,10 +102,12 @@ mod tests {
     #[test]
     fn test_candidate_pagination() {
         let items: Vec<String> = (1..=20).map(|i| format!("候選_{}", i)).collect();
-        let mut list = CandidateList::new(items, "123456789");
+        let mut list = CandidateList::new(items.clone(), "123456789");
 
+        assert_eq!(list.total_candidates(), 20);
         assert_eq!(list.total_pages(), 3);
         assert_eq!(list.current_page(), 0);
+        assert_eq!(list.all_candidates(), &items[..]);
 
         let p1 = list.current_page_items();
         assert_eq!(p1.len(), 9);
@@ -109,6 +115,13 @@ mod tests {
         assert_eq!(p1[8], ('9', "候選_9"));
 
         assert_eq!(list.select_by_key('2'), Some("候選_2"));
+        assert_eq!(list.select_by_key('x'), None); // Invalid key
+
+        assert_eq!(list.select_by_index(0), Some("候選_1"));
+        assert_eq!(list.select_by_index(9), Some("候選_10"));
+        assert_eq!(list.select_by_index(999), None);
+
+        assert!(!list.prev_page()); // Already at page 0
 
         assert!(list.next_page());
         assert_eq!(list.current_page(), 1);
@@ -125,5 +138,18 @@ mod tests {
         assert!(!list.next_page()); // no more pages
         assert!(list.prev_page());
         assert_eq!(list.current_page(), 1);
+    }
+
+    #[test]
+    fn test_empty_candidates() {
+        let mut list = CandidateList::new(vec![], "");
+        assert!(list.is_empty());
+        assert_eq!(list.total_pages(), 0);
+        assert_eq!(list.total_candidates(), 0);
+        assert!(!list.next_page());
+        assert!(!list.prev_page());
+        assert!(list.current_page_items().is_empty());
+        assert_eq!(list.select_by_key('1'), None);
+        assert_eq!(list.select_by_index(0), None);
     }
 }

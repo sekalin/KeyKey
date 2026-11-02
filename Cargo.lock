@@ -41,6 +41,7 @@ version = "2.0.0"
 dependencies = [
  "keykey-core",
  "keykey-tsf",
+ "windows",
 ]
 
 [[package]]

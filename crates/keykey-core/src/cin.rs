@@ -147,10 +147,11 @@ mod tests {
     use super::*;
 
     const SAMPLE_CIN: &str = r#"
-# Test CIN
+# Test CIN Header
 %ename Phonetic
 %cname 注音
 %selkey 123456789
+%endkey 3467
 %keyname begin
 1 ㄅ
 j ㄨ
@@ -163,14 +164,40 @@ j ㄨ
 %chardef end
 "#;
 
+    const EXTRA_CIN: &str = r#"
+%keyname begin
+5 ㄓ
+%keyname end
+%chardef begin
+1j4 佈
+5 ㄓ
+%chardef end
+"#;
+
     #[test]
     fn test_parse_cin() {
         let table = CinTable::load_from_reader(SAMPLE_CIN.as_bytes()).unwrap();
+        assert_eq!(table.ename, "Phonetic");
         assert_eq!(table.cname, "注音");
         assert_eq!(table.selkey, "123456789");
-        assert_eq!(table.keys_to_symbols("1j4"), "ㄅㄨˋ");
+        assert_eq!(table.endkey, "3467");
+        assert_eq!(table.keys_to_symbols("1j4?"), "ㄅㄨˋ?"); // '?' has no mapping, keeps '?'
 
         let candidates = table.lookup("1j4").unwrap();
         assert_eq!(candidates, &["不", "布", "部"]);
+        assert_eq!(table.lookup("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_merge_cin() {
+        let mut table1 = CinTable::load_from_reader(SAMPLE_CIN.as_bytes()).unwrap();
+        let table2 = CinTable::load_from_reader(EXTRA_CIN.as_bytes()).unwrap();
+
+        table1.merge(table2);
+
+        assert_eq!(table1.keys_to_symbols("5"), "ㄓ");
+        let candidates = table1.lookup("1j4").unwrap();
+        assert_eq!(candidates, &["不", "布", "部", "佈"]);
+        assert_eq!(table1.lookup("5").unwrap(), &["ㄓ"]);
     }
 }

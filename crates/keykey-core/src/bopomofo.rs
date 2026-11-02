@@ -137,16 +137,72 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_classify_key_all() {
+        // Consonants
+        for ch in ['1', 'q', 'a', 'z', '2', 'w', 's', 'x', 'e', 'd', 'c', 'r', 'f', 'v', '5', 't', 'g', 'b', 'y', 'h', 'n'] {
+            assert_eq!(classify_key(ch), ComponentType::Consonant);
+        }
+        // Medials
+        for ch in ['u', 'j', 'm'] {
+            assert_eq!(classify_key(ch), ComponentType::Medial);
+        }
+        // Rhymes
+        for ch in ['8', 'i', 'k', ',', '9', 'o', 'l', '.', '0', 'p', ';', '/', '-'] {
+            assert_eq!(classify_key(ch), ComponentType::Rhyme);
+        }
+        // Tones
+        for ch in ['3', '4', '6', '7', ' '] {
+            assert_eq!(classify_key(ch), ComponentType::Tone);
+        }
+        // Unknown
+        for ch in ['!', '@', '#', 'A', 'Z', 'k' /* wait, k is rhyme */, '~'] {
+            if ch != 'k' {
+                assert_eq!(classify_key(ch), ComponentType::Unknown);
+            }
+        }
+    }
+
+    #[test]
     fn test_syllable_construction() {
         let mut syl = SyllableBuffer::new();
-        assert!(syl.feed_key('1').unwrap()); // ㄅ
-        assert!(syl.feed_key('j').unwrap()); // ㄨ
-        assert_eq!(syl.to_cin_code(), "1j");
+        assert!(syl.is_empty());
         assert!(!syl.is_complete());
 
-        assert!(syl.feed_key('4').unwrap()); // ˋ (4th tone)
+        // Unknown key
+        assert_eq!(syl.feed_key('!'), Ok(false));
+
+        // Space on empty buffer does not consume
+        assert_eq!(syl.feed_key(' '), Ok(false));
+
+        // Consonant replacement
+        assert!(syl.feed_key('1').unwrap()); // ㄅ
+        assert_eq!(syl.consonant, Some('1'));
+        assert!(syl.feed_key('2').unwrap()); // Replace with ㄉ
+        assert_eq!(syl.consonant, Some('2'));
+
+        // Medial replacement
+        assert!(syl.feed_key('u').unwrap()); // ㄧ
+        assert_eq!(syl.medial, Some('u'));
+        assert!(syl.feed_key('j').unwrap()); // Replace with ㄨ
+        assert_eq!(syl.medial, Some('j'));
+
+        // Rhyme replacement
+        assert!(syl.feed_key('8').unwrap()); // ㄚ
+        assert_eq!(syl.rhyme, Some('8'));
+        assert!(syl.feed_key('i').unwrap()); // Replace with ㄛ
+        assert_eq!(syl.rhyme, Some('i'));
+
+        assert!(!syl.is_complete());
+        assert_eq!(syl.to_cin_code(), "2ji");
+
+        // Tone 4
+        assert!(syl.feed_key('4').unwrap()); // ˋ
         assert!(syl.is_complete());
-        assert_eq!(syl.to_cin_code(), "1j4");
+        assert_eq!(syl.to_cin_code(), "2ji4");
+
+        // Clear
+        syl.clear();
+        assert!(syl.is_empty());
     }
 
     #[test]
@@ -162,13 +218,29 @@ mod tests {
     #[test]
     fn test_syllable_backspace() {
         let mut syl = SyllableBuffer::new();
-        syl.feed_key('1').unwrap();
-        syl.feed_key('j').unwrap();
-        assert_eq!(syl.to_cin_code(), "1j");
+        assert!(!syl.backspace()); // Empty backspace returns false
 
-        syl.backspace();
+        syl.feed_key('1').unwrap();
+        syl.feed_key('u').unwrap();
+        syl.feed_key('8').unwrap();
+        syl.feed_key('3').unwrap();
+        assert_eq!(syl.to_cin_code(), "1u83");
+
+        // Backspace tone
+        assert!(syl.backspace());
+        assert_eq!(syl.to_cin_code(), "1u8");
+
+        // Backspace rhyme
+        assert!(syl.backspace());
+        assert_eq!(syl.to_cin_code(), "1u");
+
+        // Backspace medial
+        assert!(syl.backspace());
         assert_eq!(syl.to_cin_code(), "1");
-        syl.backspace();
+
+        // Backspace consonant
+        assert!(syl.backspace());
         assert!(syl.is_empty());
+        assert!(!syl.backspace());
     }
 }

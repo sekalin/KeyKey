@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::sync::atomic::Ordering;
-use windows::core::{HSTRING, PCWSTR, Result};
+use windows::core::{HSTRING, PCWSTR, GUID, Result};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
@@ -10,9 +10,9 @@ use windows::Win32::UI::TextServices::*;
 
 use crate::{CLSID_KEYKEY_TEXT_SERVICE, GUID_KEYKEY_PROFILE, DLL_INSTANCE};
 
-const TEXT_SERVICE_NAME: &str = "KeyKey Bopomofo Input Method (琦琦注音)";
-const TEXT_SERVICE_DESC: &str = "中文 (繁體) - 琦琦注音";
-const LANG_ID_TRADITIONAL_CHINESE: u16 = 0x0404;
+pub const TEXT_SERVICE_NAME: &str = "KeyKey Bopomofo Input Method (琦琦注音)";
+pub const TEXT_SERVICE_DESC: &str = "中文 (繁體) - 琦琦注音";
+pub const LANG_ID_TRADITIONAL_CHINESE: u16 = 0x0404;
 
 pub fn get_module_path() -> Result<Vec<u16>> {
     let hinst = HINSTANCE(DLL_INSTANCE.load(Ordering::SeqCst) as _);
@@ -26,20 +26,27 @@ pub fn get_module_path() -> Result<Vec<u16>> {
     Ok(buffer)
 }
 
-fn to_wide(s: &str) -> Vec<u16> {
+pub fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
-pub fn register_server() -> Result<()> {
-    let dll_path = get_module_path()?;
-    let clsid_str = format!("{{{:?}}}", CLSID_KEYKEY_TEXT_SERVICE);
-    let clsid_key_path = format!("CLSID\\{}", clsid_str);
+pub fn register_com_keys(root_key: HKEY, prefix: &str, dll_path: &[u16]) -> Result<()> {
+    register_com_keys_with_clsid(root_key, prefix, &CLSID_KEYKEY_TEXT_SERVICE, dll_path)
+}
 
-    // 1. Register COM InProcServer32 in HKEY_CLASSES_ROOT
+pub fn register_com_keys_with_clsid(
+    root_key: HKEY,
+    prefix: &str,
+    clsid: &GUID,
+    dll_path: &[u16],
+) -> Result<()> {
+    let clsid_str = format!("{{{:?}}}", clsid);
+    let clsid_key_path = format!("{}{}", prefix, clsid_str);
+
     let mut hkey_clsid = HKEY::default();
     unsafe {
         RegCreateKeyW(
-            HKEY_CLASSES_ROOT,
+            root_key,
             PCWSTR(to_wide(&clsid_key_path).as_ptr()),
             &mut hkey_clsid,
         ).ok()?;
@@ -60,7 +67,6 @@ pub fn register_server() -> Result<()> {
             &mut hkey_inproc,
         ).ok()?;
 
-        // Set DLL path
         RegSetValueExW(
             hkey_inproc,
             None,
@@ -69,7 +75,6 @@ pub fn register_server() -> Result<()> {
             Some(std::slice::from_raw_parts(dll_path.as_ptr() as *const u8, dll_path.len() * 2)),
         ).ok()?;
 
-        // Set ThreadingModel = Apartment
         let tm_w = to_wide("Apartment");
         RegSetValueExW(
             hkey_inproc,
@@ -82,30 +87,56 @@ pub fn register_server() -> Result<()> {
         let _ = RegCloseKey(hkey_inproc);
         let _ = RegCloseKey(hkey_clsid);
     }
+    Ok(())
+}
+
+pub fn unregister_com_keys(root_key: HKEY, prefix: &str) -> Result<()> {
+    unregister_com_keys_with_clsid(root_key, prefix, &CLSID_KEYKEY_TEXT_SERVICE)
+}
+
+pub fn unregister_com_keys_with_clsid(root_key: HKEY, prefix: &str, clsid: &GUID) -> Result<()> {
+    let clsid_str = format!("{{{:?}}}", clsid);
+    let clsid_key_path = format!("{}{}", prefix, clsid_str);
+    let inproc_key_path = format!("{}{}\\InprocServer32", prefix, clsid_str);
+
+    unsafe {
+        let _ = RegDeleteKeyW(root_key, PCWSTR(to_wide(&inproc_key_path).as_ptr()));
+        let _ = RegDeleteKeyW(root_key, PCWSTR(to_wide(&clsid_key_path).as_ptr()));
+    }
+    Ok(())
+}
+
+pub fn register_server() -> Result<()> {
+    let dll_path = get_module_path()?;
+
+    // 1. Register COM InProcServer32 (HKCR if elevated, otherwise fallback to HKCU)
+    if register_com_keys(HKEY_CLASSES_ROOT, "CLSID\\", &dll_path).is_err() {
+        register_com_keys(HKEY_CURRENT_USER, "Software\\Classes\\CLSID\\", &dll_path)?;
+    }
 
     // 2. Register TSF Language Profile via ITfInputProcessorProfiles
     unsafe {
         let profiles: ITfInputProcessorProfiles =
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
 
-        profiles.Register(&CLSID_KEYKEY_TEXT_SERVICE)?;
+        let _ = profiles.Register(&CLSID_KEYKEY_TEXT_SERVICE);
 
         let desc_hstring = HSTRING::from(TEXT_SERVICE_DESC);
-        profiles.AddLanguageProfile(
+        let _ = profiles.AddLanguageProfile(
             &CLSID_KEYKEY_TEXT_SERVICE,
             LANG_ID_TRADITIONAL_CHINESE,
             &GUID_KEYKEY_PROFILE,
             desc_hstring.as_wide(),
             &dll_path[..dll_path.len() - 1], // without trailing null
             0,
-        )?;
+        );
 
-        profiles.EnableLanguageProfile(
+        let _ = profiles.EnableLanguageProfile(
             &CLSID_KEYKEY_TEXT_SERVICE,
             LANG_ID_TRADITIONAL_CHINESE,
             &GUID_KEYKEY_PROFILE,
             true,
-        )?;
+        );
     }
 
     // 3. Register TSF Categories via ITfCategoryMgr
@@ -170,15 +201,42 @@ pub fn unregister_server() -> Result<()> {
         }
     }
 
-    // 3. Delete COM Registry Keys
-    let clsid_str = format!("{{{:?}}}", CLSID_KEYKEY_TEXT_SERVICE);
-    let clsid_key_path = format!("CLSID\\{}", clsid_str);
-    let inproc_key_path = format!("CLSID\\{}\\InprocServer32", clsid_str);
-
-    unsafe {
-        let _ = RegDeleteKeyW(HKEY_CLASSES_ROOT, PCWSTR(to_wide(&inproc_key_path).as_ptr()));
-        let _ = RegDeleteKeyW(HKEY_CLASSES_ROOT, PCWSTR(to_wide(&clsid_key_path).as_ptr()));
-    }
+    // 3. Delete COM Registry Keys (try HKCR then HKCU)
+    let _ = unregister_com_keys(HKEY_CLASSES_ROOT, "CLSID\\");
+    let _ = unregister_com_keys(HKEY_CURRENT_USER, "Software\\Classes\\CLSID\\");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_to_wide() {
+        let wide = to_wide("hello");
+        assert_eq!(wide, vec![b'h' as u16, b'e' as u16, b'l' as u16, b'l' as u16, b'o' as u16, 0]);
+    }
+
+    #[test]
+    fn test_get_module_path() {
+        let path = get_module_path();
+        assert!(path.is_ok());
+        let path_vec = path.unwrap();
+        assert!(!path_vec.is_empty());
+        assert_eq!(path_vec.last(), Some(&0));
+    }
+
+    #[test]
+    fn test_register_and_unregister_com_keys_current_user() {
+        let test_dll_path = to_wide("C:\\Windows\\System32\\test.dll");
+        let prefix = "Software\\Classes\\CLSID\\";
+        let test_clsid = GUID::from_u128(0x99998888_7777_6666_5555_444433332222);
+
+        // Register under HKCU
+        assert!(register_com_keys_with_clsid(HKEY_CURRENT_USER, prefix, &test_clsid, &test_dll_path).is_ok());
+
+        // Unregister under HKCU
+        assert!(unregister_com_keys_with_clsid(HKEY_CURRENT_USER, prefix, &test_clsid).is_ok());
+    }
 }
