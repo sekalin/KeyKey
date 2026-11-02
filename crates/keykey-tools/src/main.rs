@@ -2,6 +2,68 @@ use std::env;
 use keykey_core::cin::CinTable;
 use keykey_core::engine::{EngineAction, KeyCode, KeyKeyEngine};
 
+fn is_elevated() -> bool {
+    let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion".encode_utf16().chain(std::iter::once(0)).collect();
+    let mut hkey = windows::Win32::System::Registry::HKEY::default();
+    unsafe {
+        windows::Win32::System::Registry::RegOpenKeyExW(
+            windows::Win32::System::Registry::HKEY_LOCAL_MACHINE,
+            windows::core::PCWSTR(subkey.as_ptr()),
+            0,
+            windows::Win32::System::Registry::KEY_WRITE,
+            &mut hkey,
+        ).is_ok()
+    }
+}
+
+fn sync_language_list_and_refresh(enable: bool) {
+    let tip = "0404:{B892F1C2-88E4-4866-96D5-812C465EB86B}{6786A76E-6F3C-4318-A785-5AE4E8251268}";
+    let script = if enable {
+        format!(
+            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' }}; if ($zh -and ($zh.InputMethodTips -notcontains $tip)) {{ $zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $list -Force }}; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe",
+            tip
+        )
+    } else {
+        format!(
+            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' }}; if ($zh -and ($zh.InputMethodTips -contains $tip)) {{ [void]$zh.InputMethodTips.Remove($tip); Set-WinUserLanguageList $list -Force }}; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe",
+            tip
+        )
+    };
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output();
+}
+
+fn register_core() -> i32 {
+    println!("Registering KeyKey TSF TIP with Windows 11...");
+    match keykey_tsf::register::register_server() {
+        Ok(_) => {
+            sync_language_list_and_refresh(true);
+            println!("Successfully registered KeyKey with Windows 11!");
+            0
+        }
+        Err(e) => {
+            eprintln!("Failed to register: {:?}", e);
+            1
+        }
+    }
+}
+
+fn unregister_core() -> i32 {
+    println!("Unregistering KeyKey TSF TIP from Windows 11...");
+    match keykey_tsf::register::unregister_server() {
+        Ok(_) => {
+            sync_language_list_and_refresh(false);
+            println!("Successfully unregistered KeyKey.");
+            0
+        }
+        Err(e) => {
+            eprintln!("Failed to unregister: {:?}", e);
+            1
+        }
+    }
+}
+
 pub fn run(args: &[String]) -> i32 {
     unsafe {
         let _ = windows::Win32::System::Com::CoInitialize(None);
@@ -10,31 +72,54 @@ pub fn run(args: &[String]) -> i32 {
 
     match command {
         "register" => {
-            println!("Registering KeyKey TSF TIP with Windows 11...");
-            match keykey_tsf::register::register_server() {
-                Ok(_) => {
-                    println!("Successfully registered KeyKey with Windows 11!");
-                    0
+            if !is_elevated() {
+                println!("提示：註冊 Windows 11 原生輸入法需要系統管理員權限 (Administrator)。");
+                println!("正在自動請求系統管理員權限以完成註冊 (請在出現的 UAC 提示視窗中點擊「是」)...");
+                if let Ok(exe_path) = env::current_exe() {
+                    let script = format!(
+                        "Start-Process -FilePath '{}' -ArgumentList 'register-elevated' -Verb RunAs -Wait",
+                        exe_path.display()
+                    );
+                    let status = std::process::Command::new("powershell")
+                        .args(["-NoProfile", "-Command", &script])
+                        .status();
+                    if let Ok(st) = status {
+                        if st.success() {
+                            println!("已成功取得權限並完成註冊！現在可按 Win + Space 切換為「琦琦注音」。");
+                            return 0;
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Failed to register: {:?}", e);
-                    1
-                }
+                println!("若未授權 UAC，您也可以在開始選單中以「系統管理員身分」開啟終端機後再執行 register。");
+                return 1;
             }
+            register_core()
         }
+        "register-elevated" => register_core(),
         "unregister" => {
-            println!("Unregistering KeyKey TSF TIP from Windows 11...");
-            match keykey_tsf::register::unregister_server() {
-                Ok(_) => {
-                    println!("Successfully unregistered KeyKey.");
-                    0
+            if !is_elevated() {
+                println!("提示：解除安裝 Windows 11 輸入法需要系統管理員權限 (Administrator)。");
+                println!("正在自動請求系統管理員權限 (請在出現的 UAC 提示視窗中點擊「是」)...");
+                if let Ok(exe_path) = env::current_exe() {
+                    let script = format!(
+                        "Start-Process -FilePath '{}' -ArgumentList 'unregister-elevated' -Verb RunAs -Wait",
+                        exe_path.display()
+                    );
+                    let status = std::process::Command::new("powershell")
+                        .args(["-NoProfile", "-Command", &script])
+                        .status();
+                    if let Ok(st) = status {
+                        if st.success() {
+                            println!("已成功解除安裝 KeyKey。");
+                            return 0;
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Failed to unregister: {:?}", e);
-                    1
-                }
+                return 1;
             }
+            unregister_core()
         }
+        "unregister-elevated" => unregister_core(),
         "test-type" => {
             println!("=== KeyKey Typing Simulator ===");
             let default_cin: &[u8] =
@@ -109,14 +194,13 @@ mod tests {
 
     #[test]
     fn test_cli_register_and_unregister() {
-        unsafe {
-            let _ = windows::Win32::System::Com::CoInitialize(None);
-        }
-        let reg_code = run(&["keykey-tools".to_string(), "register".to_string()]);
+        let reg_code = run(&["keykey-tools".to_string(), "register-elevated".to_string()]);
         assert_eq!(reg_code, 0);
 
-        let unreg_code = run(&["keykey-tools".to_string(), "unregister".to_string()]);
+        let unreg_code = run(&["keykey-tools".to_string(), "unregister-elevated".to_string()]);
         assert_eq!(unreg_code, 0);
+
+        let _ = is_elevated();
     }
 
     #[test]

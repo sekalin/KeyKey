@@ -119,6 +119,37 @@ pub fn unregister_com_keys_with_clsid(root_key: HKEY, prefix: &str, clsid: &GUID
     Ok(())
 }
 
+pub fn enable_user_profile_tip(enable: bool) {
+    let subkey_str = "Control Panel\\International\\User Profile\\zh-Hant-TW";
+    let val_name = format!(
+        "0404:{{{:?}}}{{{:?}}}",
+        CLSID_KEYKEY_TEXT_SERVICE, GUID_KEYKEY_PROFILE
+    );
+    let mut hkey = HKEY::default();
+    unsafe {
+        if RegCreateKeyW(
+            HKEY_CURRENT_USER,
+            PCWSTR(to_wide(subkey_str).as_ptr()),
+            &mut hkey,
+        ).is_ok() {
+            let val_name_w = to_wide(&val_name);
+            if enable {
+                let one: u32 = 1;
+                let _ = RegSetValueExW(
+                    hkey,
+                    PCWSTR(val_name_w.as_ptr()),
+                    0,
+                    REG_DWORD,
+                    Some(std::slice::from_raw_parts(&one as *const u32 as *const u8, 4)),
+                );
+            } else {
+                let _ = RegDeleteValueW(hkey, PCWSTR(val_name_w.as_ptr()));
+            }
+            let _ = RegCloseKey(hkey);
+        }
+    }
+}
+
 pub fn register_server() -> Result<()> {
     unsafe {
         let _ = CoInitialize(None);
@@ -178,6 +209,9 @@ pub fn register_server() -> Result<()> {
         }
     }
 
+    // 4. Configure User Profile for current user
+    enable_user_profile_tip(true);
+
     Ok(())
 }
 
@@ -185,6 +219,9 @@ pub fn unregister_server() -> Result<()> {
     unsafe {
         let _ = CoInitialize(None);
     }
+    // 0. Remove from User Profile
+    enable_user_profile_tip(false);
+
     // 1. Unregister TSF Categories
     unsafe {
         if let Ok(cat_mgr) =

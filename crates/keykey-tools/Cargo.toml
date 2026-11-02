@@ -9,4 +9,4 @@ description = "Management, installation, and testing CLI for KeyKey"
 [dependencies]
 keykey-core = { path = "../keykey-core" }
 keykey-tsf = { path = "../keykey-tsf" }
-windows = { version = "0.58", features = ["Win32_System_Com"] }
+windows = { version = "0.58", features = ["Win32_System_Com", "Win32_System_Registry"] }
