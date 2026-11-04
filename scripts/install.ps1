@@ -1,4 +1,4 @@
-# KeyKey 注音輸入 - Windows 11 安裝與啟用腳本
+﻿# KeyKey 注音輸入 - Windows 11 安裝與啟用腳本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 

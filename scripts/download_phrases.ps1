@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $dest = Join-Path $PSScriptRoot "..\data\phrases"
 if (!(Test-Path $dest)) {
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
