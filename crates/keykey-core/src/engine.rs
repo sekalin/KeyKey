@@ -1,4 +1,4 @@
-use crate::bopomofo::SyllableBuffer;
+use crate::bopomofo::{classify_key, ComponentType, SyllableBuffer};
 use crate::candidate::CandidateList;
 use crate::cin::CinTable;
 
@@ -226,6 +226,29 @@ impl KeyKeyEngine {
                     }
                 } else {
                     // Key not accepted by Bopomofo syllable buffer
+                    // If current syllable was already complete (e.g. no candidates found for an invalid tone combination),
+                    // typing a new syllable starter commits the raw symbols and begins the next syllable!
+                    if self.syllable.is_complete() {
+                        let comp = classify_key(c);
+                        if matches!(
+                            comp,
+                            ComponentType::Consonant | ComponentType::Medial | ComponentType::Rhyme
+                        ) {
+                            let raw = self.cin_table.keys_to_symbols(&self.syllable.to_cin_code());
+                            self.syllable.clear();
+                            let _ = self.syllable.feed_key(c);
+                            let code = self.syllable.to_cin_code();
+                            let display_text = self.cin_table.keys_to_symbols(&code);
+                            let cursor_pos = display_text.chars().count();
+                            return vec![
+                                EngineAction::Commit(raw),
+                                EngineAction::UpdateComposition {
+                                    display_text,
+                                    cursor_pos,
+                                },
+                            ];
+                        }
+                    }
                     if self.syllable.is_empty() {
                         vec![EngineAction::Ignored]
                     } else {
@@ -533,6 +556,19 @@ j ㄨ
                 display_text: "ㄅˋ".to_string(),
                 cursor_pos: 2,
             }]
+        );
+
+        // Typing another consonant commits the raw unmapped syllable and starts the new one
+        let next_actions = engine.handle_key(KeyCode::Char('1'));
+        assert_eq!(
+            next_actions,
+            vec![
+                EngineAction::Commit("ㄅˋ".to_string()),
+                EngineAction::UpdateComposition {
+                    display_text: "ㄅ".to_string(),
+                    cursor_pos: 1,
+                },
+            ]
         );
     }
 

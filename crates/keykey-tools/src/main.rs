@@ -23,12 +23,12 @@ fn sync_language_list_and_refresh(enable: bool) {
     let tip = "0404:{B892F1C2-88E4-4866-96D5-812C465EB86B}{6786A76E-6F3C-4318-A785-5AE4E8251268}";
     let script = if enable {
         format!(
-            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' }}; if ($zh -and ($zh.InputMethodTips -notcontains $tip)) {{ $zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $list -Force }}; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe",
+            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }}; if ($zh -and ($zh.InputMethodTips -notcontains $tip)) {{ $zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $list -Force }}; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe",
             tip
         )
     } else {
         format!(
-            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' }}; if ($zh -and ($zh.InputMethodTips -contains $tip)) {{ [void]$zh.InputMethodTips.Remove($tip); Set-WinUserLanguageList $list -Force }}; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe",
+            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }}; if ($zh -and ($zh.InputMethodTips -contains $tip)) {{ [void]$zh.InputMethodTips.Remove($tip); Set-WinUserLanguageList $list -Force }}; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe",
             tip
         )
     };

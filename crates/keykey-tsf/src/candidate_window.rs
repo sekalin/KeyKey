@@ -66,6 +66,9 @@ pub fn clamp_to_monitor(mut target_x: i32, mut target_y: i32, win_width: i32, wi
                 // Flip vertically above caret
                 target_y = (target_y - win_height - 30).max(mi.rcWork.top + 8);
             }
+            if target_y < mi.rcWork.top {
+                target_y = mi.rcWork.top + 8;
+            }
         }
         (target_x, target_y)
     }
@@ -222,7 +225,7 @@ impl CustomCandidateWindow {
                         let mut rc = RECT::default();
                         let mut fclipped = BOOL(0);
                         if view.GetTextExt(edit_cookie, &range, &mut rc, &mut fclipped).is_ok() {
-                            if rc.bottom > 0 && rc.left > 0 {
+                            if rc.right > rc.left || rc.bottom > rc.top {
                                 target_x = rc.left;
                                 target_y = rc.bottom + 6;
                                 found_pos = true;
@@ -245,8 +248,7 @@ impl CustomCandidateWindow {
                         x: gui.rcCaret.left,
                         y: gui.rcCaret.bottom + 6,
                     };
-                    let _ = ClientToScreen(gui.hwndCaret, &mut pt);
-                    if pt.x > 0 || pt.y > 0 {
+                    if ClientToScreen(gui.hwndCaret, &mut pt).as_bool() {
                         target_x = pt.x;
                         target_y = pt.y;
                         found_pos = true;
@@ -642,9 +644,11 @@ mod tests {
         assert!(rx < 99999);
         assert!(by < 99999);
 
-        // Clamping negative left
+        // Clamping negative left and top
         let (lx, _) = clamp_to_monitor(-50000, 100, 300, 46);
         assert!(lx > -50000);
+        let (_, ty) = clamp_to_monitor(100, -50000, 300, 46);
+        assert!(ty > -50000);
     }
 
     #[test]

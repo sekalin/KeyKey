@@ -55,6 +55,10 @@ impl SyllableBuffer {
     /// If a tone is fed or space is pressed, the syllable is considered complete.
     pub fn feed_key(&mut self, ch: char) -> Result<bool, ()> {
         let comp = classify_key(ch);
+        // If syllable already has a tone, non-tone keys cannot be added to it
+        if self.tone.is_some() && comp != ComponentType::Tone {
+            return Ok(false);
+        }
         match comp {
             ComponentType::Consonant => {
                 // If user presses consonant, replace or set

@@ -3,13 +3,13 @@ $tip = '0404:{B892F1C2-88E4-4866-96D5-812C465EB86B}{6786A76E-6F3C-4318-A785-5AE4
 
 Write-Host "Updating Windows User Language List..."
 $list = Get-WinUserLanguageList
-$zh = $list | Where-Object { $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' }
+$zh = $list | Where-Object { $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }
 
 if (-not $zh) {
     Write-Host "Adding zh-Hant-TW language pack..."
     $zh = New-WinUserLanguageList "zh-Hant-TW"
     $list.Add($zh[0])
-    $zh = $list | Where-Object { $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' }
+    $zh = $list | Where-Object { $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }
 }
 
 if ($zh) {
