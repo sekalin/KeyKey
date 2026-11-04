@@ -70,13 +70,26 @@ impl IClassFactory_Impl for KeyKeyClassFactory_Impl {
     }
 }
 
-#[implement(ITfTextInputProcessorEx, ITfKeyEventSink, ITfCompositionSink)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyStroke {
+    Engine(KeyCode),
+    CommitDirect(String),
+}
+
+#[implement(
+    ITfTextInputProcessorEx,
+    ITfKeyEventSink,
+    ITfCompositionSink,
+    ITfCompartmentEventSink
+)]
 pub struct KeyKeyTip {
-    client_id: Cell<u32>,
-    thread_mgr: RefCell<Option<ITfThreadMgr>>,
+    client_id: Rc<Cell<u32>>,
+    thread_mgr: Rc<RefCell<Option<ITfThreadMgr>>>,
     engine: Rc<RefCell<KeyKeyEngine>>,
     active_composition: Rc<RefCell<Option<ITfComposition>>>,
     candidate_ui: CandidateUIManager,
+    shift_alone: Cell<bool>,
+    compartment_cookie: Cell<Option<u32>>,
 }
 
 impl KeyKeyTip {
@@ -86,51 +99,130 @@ impl KeyKeyTip {
             .unwrap_or_else(|_| CinTable::new());
 
         let engine = KeyKeyEngine::new(cin_table);
-
-        Self {
-            client_id: Cell::new(0),
-            thread_mgr: RefCell::new(None),
-            engine: Rc::new(RefCell::new(engine)),
-            active_composition: Rc::new(RefCell::new(None)),
-            candidate_ui: CandidateUIManager::new(),
-        }
+        Self::with_engine(Rc::new(RefCell::new(engine)))
     }
 
     pub fn with_engine(engine: Rc<RefCell<KeyKeyEngine>>) -> Self {
+        let client_id = Rc::new(Cell::new(0));
+        let thread_mgr: Rc<RefCell<Option<ITfThreadMgr>>> = Rc::new(RefCell::new(None));
+        let active_composition: Rc<RefCell<Option<ITfComposition>>> = Rc::new(RefCell::new(None));
+        let candidate_ui = CandidateUIManager::new();
+
+        // Wire candidate list mouse finalization callback
+        let cand_mgr_clone = candidate_ui.clone();
+        let tm_clone = thread_mgr.clone();
+        let eng_clone = engine.clone();
+        let comp_clone = active_composition.clone();
+        let cid_clone = client_id.clone();
+
+        candidate_ui.set_on_finalize(move |idx| {
+            if let Some(ref tm) = *tm_clone.borrow() {
+                unsafe {
+                    if let Ok(doc_mgr) = tm.GetFocus() {
+                        if let Ok(context) = doc_mgr.GetTop() {
+                            let text = cand_mgr_clone.data.candidates.borrow().get(idx as usize).cloned();
+                            if let Some(text) = text {
+                                let session: ITfEditSession = KeyKeyEditSession::new(
+                                    context.clone(),
+                                    EditAction::Commit(text),
+                                    comp_clone.clone(),
+                                    None,
+                                ).into();
+                                let _ = context.RequestEditSession(cid_clone.get(), &session, TF_ES_READWRITE | TF_ES_SYNC);
+                            }
+                        }
+                    }
+                    let _ = cand_mgr_clone.close(tm);
+                }
+            }
+            eng_clone.borrow_mut().reset();
+        });
+
         Self {
-            client_id: Cell::new(0),
-            thread_mgr: RefCell::new(None),
+            client_id,
+            thread_mgr,
             engine,
-            active_composition: Rc::new(RefCell::new(None)),
-            candidate_ui: CandidateUIManager::new(),
+            active_composition,
+            candidate_ui,
+            shift_alone: Cell::new(false),
+            compartment_cookie: Cell::new(None),
         }
     }
 
-    fn map_virtual_key(&self, wparam: WPARAM) -> Option<KeyCode> {
+    pub fn get_openclose_compartment(&self) -> Option<bool> {
+        let tm = self.thread_mgr.borrow().clone()?;
+        let comp_mgr: ITfCompartmentMgr = tm.cast().ok()?;
+        unsafe {
+            let comp = comp_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE).ok()?;
+            let var = comp.GetValue().ok()?;
+            let val: i32 = (&var).try_into().ok()?;
+            Some(val != 0)
+        }
+    }
+
+    pub fn set_openclose_compartment(&self, open: bool) {
+        if let Some(ref tm) = *self.thread_mgr.borrow() {
+            if let Ok(comp_mgr) = tm.cast::<ITfCompartmentMgr>() {
+                if let Ok(comp) = unsafe { comp_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE) } {
+                    let var = windows_core::VARIANT::from(if open { 1i32 } else { 0i32 });
+                    unsafe {
+                        let _ = comp.SetValue(self.client_id.get(), &var);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn map_virtual_key(&self, wparam: WPARAM, is_shift: bool) -> Option<KeyStroke> {
         let vk = wparam.0 as u16;
-        match VIRTUAL_KEY(vk) {
-            VK_BACK => Some(KeyCode::Backspace),
-            VK_RETURN => Some(KeyCode::Enter),
-            VK_ESCAPE => Some(KeyCode::Escape),
-            VK_SPACE => Some(KeyCode::Space),
-            VK_DOWN => Some(KeyCode::Down),
-            VK_UP => Some(KeyCode::Up),
-            VK_PRIOR => Some(KeyCode::PageUp),
-            VK_NEXT => Some(KeyCode::PageDown),
-            VK_OEM_COMMA => Some(KeyCode::Char(',')),
-            VK_OEM_PERIOD => Some(KeyCode::Char('.')),
-            VK_OEM_1 => Some(KeyCode::Char(';')),
-            VK_OEM_2 => Some(KeyCode::Char('/')),
-            VK_OEM_MINUS => Some(KeyCode::Char('-')),
-            _ => {
-                if (b'0'..=b'9').contains(&(vk as u8)) {
-                    Some(KeyCode::Char((vk as u8) as char))
-                } else if (b'A'..=b'Z').contains(&(vk as u8)) {
-                    // Convert to lowercase
-                    let ch = ((vk as u8) + 32) as char;
-                    Some(KeyCode::Char(ch))
-                } else {
-                    None
+        if is_shift {
+            match VIRTUAL_KEY(vk) {
+                VK_OEM_COMMA => Some(KeyStroke::CommitDirect("，".to_string())),
+                VK_OEM_PERIOD => Some(KeyStroke::CommitDirect("。".to_string())),
+                VK_OEM_2 => Some(KeyStroke::CommitDirect("？".to_string())),
+                VK_OEM_1 => Some(KeyStroke::CommitDirect("：".to_string())),
+                VK_OEM_4 => Some(KeyStroke::CommitDirect("「".to_string())),
+                VK_OEM_6 => Some(KeyStroke::CommitDirect("」".to_string())),
+                VK_OEM_5 => Some(KeyStroke::CommitDirect("、".to_string())),
+                VK_OEM_7 => Some(KeyStroke::CommitDirect("”".to_string())),
+                VK_OEM_MINUS => Some(KeyStroke::CommitDirect("——".to_string())),
+                _ => {
+                    if vk == b'1' as u16 {
+                        Some(KeyStroke::CommitDirect("！".to_string()))
+                    } else if (b'A'..=b'Z').contains(&(vk as u8)) {
+                        // Direct uppercase ASCII commit
+                        Some(KeyStroke::CommitDirect(((vk as u8) as char).to_string()))
+                    } else {
+                        None
+                    }
+                }
+            }
+        } else {
+            match VIRTUAL_KEY(vk) {
+                VK_OEM_5 => Some(KeyStroke::CommitDirect("、".to_string())),
+                VK_BACK => Some(KeyStroke::Engine(KeyCode::Backspace)),
+                VK_RETURN => Some(KeyStroke::Engine(KeyCode::Enter)),
+                VK_ESCAPE => Some(KeyStroke::Engine(KeyCode::Escape)),
+                VK_SPACE => Some(KeyStroke::Engine(KeyCode::Space)),
+                VK_DOWN => Some(KeyStroke::Engine(KeyCode::Down)),
+                VK_UP => Some(KeyStroke::Engine(KeyCode::Up)),
+                VK_PRIOR => Some(KeyStroke::Engine(KeyCode::PageUp)),
+                VK_NEXT => Some(KeyStroke::Engine(KeyCode::PageDown)),
+                VK_OEM_COMMA => Some(KeyStroke::Engine(KeyCode::Char(','))),
+                VK_OEM_PERIOD => Some(KeyStroke::Engine(KeyCode::Char('.'))),
+                VK_OEM_1 => Some(KeyStroke::Engine(KeyCode::Char(';'))),
+                VK_OEM_2 => Some(KeyStroke::Engine(KeyCode::Char('/'))),
+                VK_OEM_MINUS => Some(KeyStroke::Engine(KeyCode::Char('-'))),
+                _ => {
+                    if (b'0'..=b'9').contains(&(vk as u8)) {
+                        Some(KeyStroke::Engine(KeyCode::Char((vk as u8) as char)))
+                    } else if (b'A'..=b'Z').contains(&(vk as u8)) {
+                        // Convert to lowercase for Bopomofo mapping
+                        let ch = ((vk as u8) + 32) as char;
+                        Some(KeyStroke::Engine(KeyCode::Char(ch)))
+                    } else {
+                        None
+                    }
                 }
             }
         }
@@ -149,6 +241,18 @@ impl ITfTextInputProcessor_Impl for KeyKeyTip_Impl {
                         let _ = keystroke_mgr.AdviseKeyEventSink(tid, &key_sink, true);
                     }
                 }
+
+                if let Ok(comp_mgr) = tm.cast::<ITfCompartmentMgr>() {
+                    if let Ok(comp) = comp_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE) {
+                        if let Ok(source) = comp.cast::<ITfSource>() {
+                            if let Ok(sink) = self.cast::<ITfCompartmentEventSink>() {
+                                if let Ok(cookie) = source.AdviseSink(&ITfCompartmentEventSink::IID, &sink) {
+                                    self.compartment_cookie.set(Some(cookie));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -159,6 +263,16 @@ impl ITfTextInputProcessor_Impl for KeyKeyTip_Impl {
         if let Some(tm) = self.thread_mgr.borrow_mut().take() {
             let _ = self.candidate_ui.close(&tm);
             unsafe {
+                if let Some(cookie) = self.compartment_cookie.take() {
+                    if let Ok(comp_mgr) = tm.cast::<ITfCompartmentMgr>() {
+                        if let Ok(comp) = comp_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE) {
+                            if let Ok(source) = comp.cast::<ITfSource>() {
+                                let _ = source.UnadviseSink(cookie);
+                            }
+                        }
+                    }
+                }
+
                 if let Ok(keystroke_mgr) = tm.cast::<ITfKeystrokeMgr>() {
                     let _ = keystroke_mgr.UnadviseKeyEventSink(tid);
                 }
@@ -173,6 +287,26 @@ impl ITfTextInputProcessor_Impl for KeyKeyTip_Impl {
 impl ITfTextInputProcessorEx_Impl for KeyKeyTip_Impl {
     fn ActivateEx(&self, ptim: Option<&ITfThreadMgr>, tid: u32, _dwflags: u32) -> Result<()> {
         self.Activate(ptim, tid)
+    }
+}
+
+impl ITfCompartmentEventSink_Impl for KeyKeyTip_Impl {
+    fn OnChange(&self, rguid: *const GUID) -> Result<()> {
+        if !rguid.is_null() && unsafe { *rguid } == GUID_COMPARTMENT_KEYBOARD_OPENCLOSE {
+            if let Some(open) = self.get_openclose_compartment() {
+                let target_mode = if open {
+                    keykey_core::engine::InputMode::Bopomofo
+                } else {
+                    keykey_core::engine::InputMode::English
+                };
+                let mut engine = self.engine.borrow_mut();
+                if engine.mode != target_mode {
+                    engine.mode = target_mode;
+                    engine.reset();
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -203,35 +337,50 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
         _lparam: LPARAM,
     ) -> Result<BOOL> {
         let engine = self.engine.borrow();
-        if let Some(keycode) = self.map_virtual_key(wparam) {
-            // If candidate list is active, we consume candidate selection & navigation keys
-            if engine.candidate_list.is_some() {
-                match keycode {
-                    KeyCode::Char(c) if engine.cin_table.selkey.contains(c) => return Ok(BOOL(1)),
-                    KeyCode::Space | KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp | KeyCode::Escape => {
-                        return Ok(BOOL(1));
-                    }
-                    _ => return Ok(BOOL(0)),
-                }
-            }
+        if engine.mode == keykey_core::engine::InputMode::English {
+            return Ok(BOOL(0));
+        }
 
-            // If composing a syllable
-            if !engine.syllable.is_empty() {
-                match keycode {
-                    KeyCode::Backspace | KeyCode::Escape | KeyCode::Enter | KeyCode::Space => {
-                        return Ok(BOOL(1));
-                    }
-                    KeyCode::Char(c) if keykey_core::bopomofo::classify_key(c) != keykey_core::ComponentType::Unknown => {
-                        return Ok(BOOL(1));
-                    }
-                    _ => return Ok(BOOL(0)),
-                }
-            }
+        let vk = wparam.0 as u16;
+        if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
+            return Ok(BOOL(0));
+        }
 
-            // If empty, check if key is a valid Bopomofo initial key
-            if let KeyCode::Char(c) = keycode {
-                if keykey_core::bopomofo::classify_key(c) != keykey_core::ComponentType::Unknown && c != ' ' {
-                    return Ok(BOOL(1));
+        let is_shift = unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
+        if let Some(keystroke) = self.map_virtual_key(wparam, is_shift) {
+            match keystroke {
+                KeyStroke::CommitDirect(_) => return Ok(BOOL(1)),
+                KeyStroke::Engine(keycode) => {
+                    // If candidate list is active, we consume candidate selection & navigation keys
+                    if engine.candidate_list.is_some() {
+                        match keycode {
+                            KeyCode::Char(c) if engine.cin_table.selkey.contains(c) => return Ok(BOOL(1)),
+                            KeyCode::Space | KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp | KeyCode::Escape => {
+                                return Ok(BOOL(1));
+                            }
+                            _ => return Ok(BOOL(0)),
+                        }
+                    }
+
+                    // If composing a syllable
+                    if !engine.syllable.is_empty() {
+                        match keycode {
+                            KeyCode::Backspace | KeyCode::Escape | KeyCode::Enter | KeyCode::Space => {
+                                return Ok(BOOL(1));
+                            }
+                            KeyCode::Char(c) if keykey_core::bopomofo::classify_key(c) != keykey_core::ComponentType::Unknown => {
+                                return Ok(BOOL(1));
+                            }
+                            _ => return Ok(BOOL(0)),
+                        }
+                    }
+
+                    // If empty, check if key is a valid Bopomofo initial key
+                    if let KeyCode::Char(c) = keycode {
+                        if keykey_core::bopomofo::classify_key(c) != keykey_core::ComponentType::Unknown && c != ' ' {
+                            return Ok(BOOL(1));
+                        }
+                    }
                 }
             }
         }
@@ -245,75 +394,110 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
+        let vk = wparam.0 as u16;
+        if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
+            self.shift_alone.set(true);
+            return Ok(BOOL(0));
+        }
+        self.shift_alone.set(false);
+
+        if self.engine.borrow().mode == keykey_core::engine::InputMode::English {
+            return Ok(BOOL(0));
+        }
+
         let Some(context) = pic else {
             return Ok(BOOL(0));
         };
 
-        let Some(keycode) = self.map_virtual_key(wparam) else {
+        let is_shift = unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
+        let Some(keystroke) = self.map_virtual_key(wparam, is_shift) else {
             return Ok(BOOL(0));
         };
-
-        let actions = self.engine.borrow_mut().handle_key(keycode);
-        if actions.is_empty() || actions == vec![EngineAction::Ignored] {
-            return Ok(BOOL(0));
-        }
 
         let sink: Option<ITfCompositionSink> = unsafe { self.cast().ok() };
         let tid = self.client_id.get();
 
-        for action in actions {
-            match action {
-                EngineAction::UpdateComposition { display_text, .. } => {
-                    let session: ITfEditSession = KeyKeyEditSession::new(
-                        context.clone(),
-                        EditAction::UpdateComposition(display_text),
-                        self.active_composition.clone(),
-                        sink.clone(),
-                    ).into();
-                    unsafe {
-                        let _ = context.RequestEditSession(tid, &session, TF_ES_READWRITE | TF_ES_SYNC);
-                    }
-                }
-                EngineAction::Commit(text) => {
-                    let session: ITfEditSession = KeyKeyEditSession::new(
-                        context.clone(),
-                        EditAction::Commit(text),
-                        self.active_composition.clone(),
-                        sink.clone(),
-                    ).into();
-                    unsafe {
-                        let _ = context.RequestEditSession(tid, &session, TF_ES_READWRITE | TF_ES_SYNC);
-                    }
-                }
-                EngineAction::ShowCandidates { page, .. } => {
-                    if let Some(ref tm) = *self.thread_mgr.borrow() {
-                        let all_cands: Vec<String> = self
-                            .engine
-                            .borrow()
-                            .candidate_list
-                            .as_ref()
-                            .map(|cl| cl.all_candidates().to_vec())
-                            .unwrap_or_default();
-                        let _ = self.candidate_ui.show(tm, all_cands, page);
-                    }
-                }
-                EngineAction::HideCandidates => {
+        match keystroke {
+            KeyStroke::CommitDirect(text) => {
+                if self.engine.borrow().candidate_list.is_some() {
                     if let Some(ref tm) = *self.thread_mgr.borrow() {
                         let _ = self.candidate_ui.close(tm);
                     }
-                    if self.engine.borrow().syllable.is_empty() {
-                        let session: ITfEditSession = KeyKeyEditSession::new(
-                            context.clone(),
-                            EditAction::Cancel,
-                            self.active_composition.clone(),
-                            sink.clone(),
-                        ).into();
-                        unsafe {
-                            let _ = context.RequestEditSession(tid, &session, TF_ES_READWRITE | TF_ES_SYNC);
+                }
+                self.engine.borrow_mut().reset();
+
+                let session: ITfEditSession = KeyKeyEditSession::new(
+                    context.clone(),
+                    EditAction::Commit(text),
+                    self.active_composition.clone(),
+                    sink,
+                ).into();
+                unsafe {
+                    let _ = context.RequestEditSession(tid, &session, TF_ES_READWRITE | TF_ES_SYNC);
+                }
+                return Ok(BOOL(1));
+            }
+            KeyStroke::Engine(keycode) => {
+                let actions = self.engine.borrow_mut().handle_key(keycode);
+                if actions.is_empty() || actions == vec![EngineAction::Ignored] {
+                    return Ok(BOOL(0));
+                }
+
+                for action in actions {
+                    match action {
+                        EngineAction::UpdateComposition { display_text, .. } => {
+                            let session: ITfEditSession = KeyKeyEditSession::new(
+                                context.clone(),
+                                EditAction::UpdateComposition(display_text),
+                                self.active_composition.clone(),
+                                sink.clone(),
+                            ).into();
+                            unsafe {
+                                let _ = context.RequestEditSession(tid, &session, TF_ES_READWRITE | TF_ES_SYNC);
+                            }
                         }
+                        EngineAction::Commit(text) => {
+                            let session: ITfEditSession = KeyKeyEditSession::new(
+                                context.clone(),
+                                EditAction::Commit(text),
+                                self.active_composition.clone(),
+                                sink.clone(),
+                            ).into();
+                            unsafe {
+                                let _ = context.RequestEditSession(tid, &session, TF_ES_READWRITE | TF_ES_SYNC);
+                            }
+                        }
+                        EngineAction::ShowCandidates { page, .. } => {
+                            if let Some(ref tm) = *self.thread_mgr.borrow() {
+                                let all_cands: Vec<String> = self
+                                    .engine
+                                    .borrow()
+                                    .candidate_list
+                                    .as_ref()
+                                    .map(|cl| cl.all_candidates().to_vec())
+                                    .unwrap_or_default();
+                                let _ = self.candidate_ui.show(tm, all_cands, page);
+                            }
+                        }
+                        EngineAction::HideCandidates => {
+                            if let Some(ref tm) = *self.thread_mgr.borrow() {
+                                let _ = self.candidate_ui.close(tm);
+                            }
+                            if self.engine.borrow().syllable.is_empty() {
+                                let session: ITfEditSession = KeyKeyEditSession::new(
+                                    context.clone(),
+                                    EditAction::Cancel,
+                                    self.active_composition.clone(),
+                                    sink.clone(),
+                                ).into();
+                                unsafe {
+                                    let _ = context.RequestEditSession(tid, &session, TF_ES_READWRITE | TF_ES_SYNC);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                _ => {}
             }
         }
 
@@ -332,9 +516,16 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
     fn OnKeyUp(
         &self,
         _pic: Option<&ITfContext>,
-        _wparam: WPARAM,
+        wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
+        let vk = wparam.0 as u16;
+        if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
+            if self.shift_alone.replace(false) {
+                let new_mode = self.engine.borrow_mut().toggle_mode();
+                self.set_openclose_compartment(new_mode == keykey_core::engine::InputMode::Bopomofo);
+            }
+        }
         Ok(BOOL(0))
     }
 
@@ -403,27 +594,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_compartment_check() {
+        use windows_core::VARIANT;
+        let _ = GUID_COMPARTMENT_KEYBOARD_OPENCLOSE;
+        let _ = ITfCompartmentEventSink::IID;
+        let var = VARIANT::from(1i32);
+        let val: i32 = (&var).try_into().unwrap();
+        assert_eq!(val, 1);
+    }
+
+    #[test]
     fn test_map_virtual_key_all() {
         let tip = KeyKeyTip::new();
 
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_BACK.0 as usize)), Some(KeyCode::Backspace));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_RETURN.0 as usize)), Some(KeyCode::Enter));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_ESCAPE.0 as usize)), Some(KeyCode::Escape));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_SPACE.0 as usize)), Some(KeyCode::Space));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_DOWN.0 as usize)), Some(KeyCode::Down));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_UP.0 as usize)), Some(KeyCode::Up));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_PRIOR.0 as usize)), Some(KeyCode::PageUp));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_NEXT.0 as usize)), Some(KeyCode::PageDown));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_BACK.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Backspace)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_RETURN.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Enter)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_ESCAPE.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Escape)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_SPACE.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Space)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_DOWN.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Down)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_UP.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Up)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_PRIOR.0 as usize), false), Some(KeyStroke::Engine(KeyCode::PageUp)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_NEXT.0 as usize), false), Some(KeyStroke::Engine(KeyCode::PageDown)));
 
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_COMMA.0 as usize)), Some(KeyCode::Char(',')));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_PERIOD.0 as usize)), Some(KeyCode::Char('.')));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_1.0 as usize)), Some(KeyCode::Char(';')));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_2.0 as usize)), Some(KeyCode::Char('/')));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_MINUS.0 as usize)), Some(KeyCode::Char('-')));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_COMMA.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Char(','))));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_PERIOD.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Char('.'))));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_1.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Char(';'))));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_2.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Char('/'))));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_MINUS.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Char('-'))));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_5.0 as usize), false), Some(KeyStroke::CommitDirect("、".to_string())));
 
-        assert_eq!(tip.map_virtual_key(WPARAM(b'1' as usize)), Some(KeyCode::Char('1')));
-        assert_eq!(tip.map_virtual_key(WPARAM(b'A' as usize)), Some(KeyCode::Char('a')));
-        assert_eq!(tip.map_virtual_key(WPARAM(VK_F1.0 as usize)), None);
+        assert_eq!(tip.map_virtual_key(WPARAM(b'1' as usize), false), Some(KeyStroke::Engine(KeyCode::Char('1'))));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'A' as usize), false), Some(KeyStroke::Engine(KeyCode::Char('a'))));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_F1.0 as usize), false), None);
+
+        // Shifted punctuations
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_COMMA.0 as usize), true), Some(KeyStroke::CommitDirect("，".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_PERIOD.0 as usize), true), Some(KeyStroke::CommitDirect("。".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_2.0 as usize), true), Some(KeyStroke::CommitDirect("？".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_1.0 as usize), true), Some(KeyStroke::CommitDirect("：".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'1' as usize), true), Some(KeyStroke::CommitDirect("！".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_4.0 as usize), true), Some(KeyStroke::CommitDirect("「".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_6.0 as usize), true), Some(KeyStroke::CommitDirect("」".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_5.0 as usize), true), Some(KeyStroke::CommitDirect("、".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_7.0 as usize), true), Some(KeyStroke::CommitDirect("”".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_MINUS.0 as usize), true), Some(KeyStroke::CommitDirect("——".to_string())));
+
+        // Shifted letter
+        assert_eq!(tip.map_virtual_key(WPARAM(b'A' as usize), true), Some(KeyStroke::CommitDirect("A".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_F1.0 as usize), true), None);
     }
 
     #[test]
@@ -579,10 +797,18 @@ mod tests {
                     if let Some(ref ctx) = context {
                         let push_res = dm.Push(ctx);
                         assert!(push_res.is_ok());
+                        let _ = mgr.SetFocus(dm);
 
                         let tip = KeyKeyTip::new();
+                        let cand_ui = tip.candidate_ui.clone();
                         let processor: ITfTextInputProcessorEx = tip.into();
                         assert!(processor.Activate(Some(mgr), client_id).is_ok());
+
+                        let tip2 = KeyKeyTip::new();
+                        *tip2.thread_mgr.borrow_mut() = Some(mgr.clone());
+                        let _ = tip2.get_openclose_compartment();
+                        tip2.set_openclose_compartment(false);
+                        tip2.set_openclose_compartment(true);
 
                         let key_sink: ITfKeyEventSink = processor.cast().unwrap();
 
@@ -619,6 +845,25 @@ mod tests {
                         let kd_ignored = key_sink.OnKeyDown(Some(ctx), WPARAM(VK_SPACE.0 as usize), LPARAM(0));
                         assert_eq!(kd_ignored.unwrap(), BOOL(0));
 
+                        // 7b. Direct commit of punctuation (VK_OEM_5 -> '、')
+                        let kd_punc = key_sink.OnKeyDown(Some(ctx), WPARAM(VK_OEM_5.0 as usize), LPARAM(0));
+                        assert_eq!(kd_punc.unwrap(), BOOL(1));
+
+                        // 7c. Candidate UI mouse finalization callback test
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'1' as usize), LPARAM(0));
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'J' as usize), LPARAM(0));
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'4' as usize), LPARAM(0));
+                        let behavior: ITfCandidateListUIElementBehavior = cand_ui.ui_element.cast().unwrap();
+                        behavior.SetSelection(0).unwrap();
+                        behavior.Finalize().unwrap();
+
+                        // 7d. Punctuation while candidate list is active -> cancels candidates and commits
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'1' as usize), LPARAM(0));
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'J' as usize), LPARAM(0));
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'4' as usize), LPARAM(0));
+                        let kd_punc_cands = key_sink.OnKeyDown(Some(ctx), WPARAM(VK_OEM_5.0 as usize), LPARAM(0));
+                        assert_eq!(kd_punc_cands.unwrap(), BOOL(1));
+
                         // 8. Test OnCompositionTerminated with active thread_mgr
                         let comp_sink: ITfCompositionSink = processor.cast().unwrap();
                         assert!(comp_sink.OnCompositionTerminated(0, None).is_ok());
@@ -642,6 +887,43 @@ mod tests {
                 let _ = mgr.Deactivate();
             }
         }
+    }
+
+    #[test]
+    fn test_shift_mode_toggle_and_compartments() {
+        let default_cin = CinTable::load_from_reader(DEFAULT_BPMF_CIN).unwrap();
+        let engine = Rc::new(RefCell::new(KeyKeyEngine::new(default_cin)));
+        let tip = KeyKeyTip::with_engine(engine.clone());
+        let key_sink: ITfKeyEventSink = tip.into();
+
+        assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::Bopomofo);
+
+        // 1. Press Shift alone -> triggers mode toggle to English on key up
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(VK_SHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnKeyUp(None, WPARAM(VK_SHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::English);
+
+        // While in English mode, OnTestKeyDown and OnKeyDown pass through (BOOL 0)
+        assert_eq!(unsafe { key_sink.OnTestKeyDown(None, WPARAM(b'1' as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(b'1' as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+
+        // 2. Press Shift again -> toggles back to Bopomofo
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(VK_LSHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnKeyUp(None, WPARAM(VK_LSHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::Bopomofo);
+
+        // 3. Shift combined with another key -> should NOT toggle mode
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(VK_RSHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(b'1' as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnKeyUp(None, WPARAM(VK_RSHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::Bopomofo);
+
+        // 4. Compartment sink OnChange
+        let comp_sink: ITfCompartmentEventSink = key_sink.cast().unwrap();
+        assert!(unsafe { comp_sink.OnChange(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE) }.is_ok());
+        let bad_guid = GUID::from_u128(0x12345678_0000_0000_0000_000000000000);
+        assert!(unsafe { comp_sink.OnChange(&bad_guid) }.is_ok());
+        assert!(unsafe { comp_sink.OnChange(std::ptr::null()) }.is_ok());
     }
 
     #[test]

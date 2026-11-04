@@ -39,6 +39,34 @@ pub fn get_module_path() -> Result<Vec<u16>> {
     Ok(buffer)
 }
 
+pub fn get_module_path_32() -> Option<Vec<u16>> {
+    let dll_64 = get_module_path().ok()?;
+    let path_str = String::from_utf16_lossy(&dll_64);
+    let trimmed = path_str.trim_matches('\0');
+    let path = std::path::Path::new(trimmed);
+
+    // 1. Same directory: keykey_tsf_32.dll
+    let candidate1 = path.with_file_name("keykey_tsf_32.dll");
+    if candidate1.exists() {
+        return candidate1.to_str().map(to_wide);
+    }
+
+    // 2. Cargo target tree: ../i686-pc-windows-msvc/release/keykey_tsf.dll
+    if let Some(parent) = path.parent() {
+        if let Some(grandparent) = parent.parent() {
+            let candidate2 = grandparent
+                .join("i686-pc-windows-msvc")
+                .join("release")
+                .join("keykey_tsf.dll");
+            if candidate2.exists() {
+                return candidate2.to_str().map(to_wide);
+            }
+        }
+    }
+
+    None
+}
+
 pub fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
@@ -158,7 +186,14 @@ pub fn register_server() -> Result<()> {
 
     // 1. Register COM InProcServer32 (HKCR if elevated, otherwise fallback to HKCU)
     if register_com_keys(HKEY_CLASSES_ROOT, "CLSID\\", &dll_path).is_err() {
-        register_com_keys(HKEY_CURRENT_USER, "Software\\Classes\\CLSID\\", &dll_path)?;
+        let _ = register_com_keys(HKEY_CURRENT_USER, "Software\\Classes\\CLSID\\", &dll_path);
+    }
+
+    // 1b. Register 32-bit (WOW64) COM InProcServer32 if 32-bit DLL exists
+    if let Some(ref dll_32) = get_module_path_32() {
+        if register_com_keys(HKEY_CLASSES_ROOT, "WOW6432Node\\CLSID\\", dll_32).is_err() {
+            let _ = register_com_keys(HKEY_CURRENT_USER, "Software\\Classes\\WOW6432Node\\CLSID\\", dll_32);
+        }
     }
 
     // 2. Register TSF Language Profile via ITfInputProcessorProfiles
@@ -257,9 +292,11 @@ pub fn unregister_server() -> Result<()> {
         }
     }
 
-    // 3. Delete COM Registry Keys (try HKCR then HKCU)
+    // 3. Delete COM Registry Keys (try HKCR then HKCU for both native 64-bit and WOW64 32-bit)
     let _ = unregister_com_keys(HKEY_CLASSES_ROOT, "CLSID\\");
     let _ = unregister_com_keys(HKEY_CURRENT_USER, "Software\\Classes\\CLSID\\");
+    let _ = unregister_com_keys(HKEY_CLASSES_ROOT, "WOW6432Node\\CLSID\\");
+    let _ = unregister_com_keys(HKEY_CURRENT_USER, "Software\\Classes\\WOW6432Node\\CLSID\\");
 
     Ok(())
 }
@@ -281,6 +318,8 @@ mod tests {
         let path_vec = path.unwrap();
         assert!(!path_vec.is_empty());
         assert_eq!(path_vec.last(), Some(&0));
+
+        let _ = get_module_path_32();
     }
 
     #[test]

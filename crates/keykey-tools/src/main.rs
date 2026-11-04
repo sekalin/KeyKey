@@ -34,6 +34,26 @@ fn sync_language_list_and_refresh(enable: bool) {
         .output();
 }
 
+fn request_elevation(arg: &str) -> bool {
+    if let Ok(val) = env::var("KEYKEY_TEST_UAC") {
+        return val == "1";
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        let script = format!(
+            "Start-Process -FilePath '{}' -ArgumentList '{}' -Verb RunAs -Wait",
+            exe_path.display(),
+            arg
+        );
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .status();
+        if let Ok(st) = status {
+            return st.success();
+        }
+    }
+    false
+}
+
 fn register_core() -> i32 {
     println!("Registering KeyKey TSF TIP with Windows 11...");
     match keykey_tsf::register::register_server() {
@@ -75,20 +95,9 @@ pub fn run(args: &[String]) -> i32 {
             if !is_elevated() {
                 println!("提示：註冊 Windows 11 原生輸入法需要系統管理員權限 (Administrator)。");
                 println!("正在自動請求系統管理員權限以完成註冊 (請在出現的 UAC 提示視窗中點擊「是」)...");
-                if let Ok(exe_path) = env::current_exe() {
-                    let script = format!(
-                        "Start-Process -FilePath '{}' -ArgumentList 'register-elevated' -Verb RunAs -Wait",
-                        exe_path.display()
-                    );
-                    let status = std::process::Command::new("powershell")
-                        .args(["-NoProfile", "-Command", &script])
-                        .status();
-                    if let Ok(st) = status {
-                        if st.success() {
-                            println!("已成功取得權限並完成註冊！現在可按 Win + Space 切換為「琦琦注音」。");
-                            return 0;
-                        }
-                    }
+                if request_elevation("register-elevated") {
+                    println!("已成功取得權限並完成註冊！現在可按 Win + Space 切換為「琦琦注音」。");
+                    return 0;
                 }
                 println!("若未授權 UAC，您也可以在開始選單中以「系統管理員身分」開啟終端機後再執行 register。");
                 return 1;
@@ -100,20 +109,9 @@ pub fn run(args: &[String]) -> i32 {
             if !is_elevated() {
                 println!("提示：解除安裝 Windows 11 輸入法需要系統管理員權限 (Administrator)。");
                 println!("正在自動請求系統管理員權限 (請在出現的 UAC 提示視窗中點擊「是」)...");
-                if let Ok(exe_path) = env::current_exe() {
-                    let script = format!(
-                        "Start-Process -FilePath '{}' -ArgumentList 'unregister-elevated' -Verb RunAs -Wait",
-                        exe_path.display()
-                    );
-                    let status = std::process::Command::new("powershell")
-                        .args(["-NoProfile", "-Command", &script])
-                        .status();
-                    if let Ok(st) = status {
-                        if st.success() {
-                            println!("已成功解除安裝 KeyKey。");
-                            return 0;
-                        }
-                    }
+                if request_elevation("unregister-elevated") {
+                    println!("已成功解除安裝 KeyKey。");
+                    return 0;
                 }
                 return 1;
             }
@@ -153,6 +151,14 @@ pub fn run(args: &[String]) -> i32 {
                         }
                         _ => {}
                     }
+                }
+            }
+
+            // Also simulate Escape to test HideCandidates
+            let esc_actions = engine.handle_key(KeyCode::Escape);
+            for action in esc_actions {
+                if let EngineAction::HideCandidates = action {
+                    println!("  [隱藏候選字框]");
                 }
             }
             0
@@ -201,6 +207,18 @@ mod tests {
         assert_eq!(unreg_code, 0);
 
         let _ = is_elevated();
+
+        // Test non-elevated simulation with UAC success
+        env::set_var("KEYKEY_TEST_UAC", "1");
+        assert_eq!(run(&["keykey-tools".to_string(), "register".to_string()]), 0);
+        assert_eq!(run(&["keykey-tools".to_string(), "unregister".to_string()]), 0);
+
+        // Test non-elevated simulation with UAC denial
+        env::set_var("KEYKEY_TEST_UAC", "0");
+        assert_eq!(run(&["keykey-tools".to_string(), "register".to_string()]), 1);
+        assert_eq!(run(&["keykey-tools".to_string(), "unregister".to_string()]), 1);
+
+        env::remove_var("KEYKEY_TEST_UAC");
     }
 
     #[test]

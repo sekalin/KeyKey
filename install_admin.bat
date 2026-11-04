@@ -12,6 +12,16 @@ if %errorLevel% NEQ 0 (
 
 pushd "%~dp0"
 
+if not exist "target\release\keykey_tsf.dll" (
+    echo [提示] 尚未建置 64-bit 與 32-bit 輸入法核心，正在執行雙架構編譯...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build_all.ps1"
+) else (
+    if not exist "target\release\keykey_tsf_32.dll" (
+        echo [提示] 尚未建置 32-bit (Win32/WOW64) 輸入法核心，正在執行雙架構編譯...
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build_all.ps1"
+    )
+)
+
 echo ===================================================================
 echo     KeyKey (琦琦注音) - Windows 11 TSF 輸入法安裝與啟用程式
 echo ===================================================================

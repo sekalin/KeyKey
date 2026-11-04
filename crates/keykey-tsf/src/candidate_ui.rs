@@ -16,6 +16,8 @@ pub struct CandidateData {
     pub selection_index: Cell<u32>,
     pub updated_flags: Cell<u32>,
     pub is_shown: Cell<bool>,
+    pub finalized_selection: Cell<Option<u32>>,
+    pub on_finalize: RefCell<Option<Rc<dyn Fn(u32)>>>,
 }
 
 #[implement(ITfUIElement, ITfCandidateListUIElement, ITfCandidateListUIElementBehavior)]
@@ -116,18 +118,25 @@ impl ITfCandidateListUIElementBehavior_Impl for CandidateUIElement_Impl {
     }
 
     fn Finalize(&self) -> Result<()> {
+        let sel = self.data.selection_index.get();
+        self.data.finalized_selection.set(Some(sel));
+        if let Some(ref cb) = *self.data.on_finalize.borrow() {
+            cb(sel);
+        }
         Ok(())
     }
 
     fn Abort(&self) -> Result<()> {
+        self.data.finalized_selection.set(None);
         Ok(())
     }
 }
 
+#[derive(Clone)]
 pub struct CandidateUIManager {
-    data: Rc<CandidateData>,
-    ui_element: ITfCandidateListUIElement,
-    ui_element_id: Cell<Option<u32>>,
+    pub data: Rc<CandidateData>,
+    pub ui_element: ITfCandidateListUIElement,
+    pub ui_element_id: Rc<Cell<Option<u32>>>,
 }
 
 impl CandidateUIManager {
@@ -139,6 +148,8 @@ impl CandidateUIManager {
             selection_index: Cell::new(0),
             updated_flags: Cell::new(0),
             is_shown: Cell::new(false),
+            finalized_selection: Cell::new(None),
+            on_finalize: RefCell::new(None),
         });
 
         let element = CandidateUIElement::new(data.clone());
@@ -147,7 +158,20 @@ impl CandidateUIManager {
         Self {
             data,
             ui_element,
-            ui_element_id: Cell::new(None),
+            ui_element_id: Rc::new(Cell::new(None)),
+        }
+    }
+
+    pub fn set_on_finalize<F: Fn(u32) + 'static>(&self, f: F) {
+        *self.data.on_finalize.borrow_mut() = Some(Rc::new(f));
+    }
+
+    pub fn take_finalized_candidate(&self) -> Option<String> {
+        if let Some(idx) = self.data.finalized_selection.take() {
+            let list = self.data.candidates.borrow();
+            list.get(idx as usize).cloned()
+        } else {
+            None
         }
     }
 
@@ -249,12 +273,22 @@ mod tests {
 
             assert_eq!(mgr.ui_element.GetDocumentMgr().is_err(), true);
 
+            let finalized_idx = Rc::new(Cell::new(None));
+            let f_clone = finalized_idx.clone();
+            mgr.set_on_finalize(move |idx| {
+                f_clone.set(Some(idx));
+            });
+
             // Behavior interface
             let behavior = mgr.ui_element.cast::<ITfCandidateListUIElementBehavior>().unwrap();
             behavior.SetSelection(3).unwrap();
             assert_eq!(mgr.ui_element.GetSelection().unwrap(), 3);
             behavior.Finalize().unwrap();
+            assert_eq!(mgr.take_finalized_candidate(), Some("字_4".to_string()));
+            assert_eq!(finalized_idx.get(), Some(3));
+            behavior.SetSelection(2).unwrap();
             behavior.Abort().unwrap();
+            assert_eq!(mgr.take_finalized_candidate(), None);
 
             mgr.ui_element.SetPageIndex(&[]).unwrap();
 
