@@ -1,4 +1,4 @@
-# Build script for both Win64 (x86_64) and Win32 (i686 / WOW64)
+﻿# Build script for both Win64 (x86_64) and Win32 (i686 / WOW64)
 $ErrorActionPreference = "Stop"
 
 function Safe-Clear-LockedFile($path) {
