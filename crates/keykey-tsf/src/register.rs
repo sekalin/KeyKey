@@ -10,8 +10,8 @@ use windows::Win32::UI::TextServices::*;
 
 use crate::{CLSID_KEYKEY_TEXT_SERVICE, GUID_KEYKEY_PROFILE, DLL_INSTANCE};
 
-pub const TEXT_SERVICE_NAME: &str = "KeyKey Bopomofo Input Method (琦琦注音)";
-pub const TEXT_SERVICE_DESC: &str = "中文 (繁體) - 琦琦注音";
+pub const TEXT_SERVICE_NAME: &str = "KeyKey 注音輸入";
+pub const TEXT_SERVICE_DESC: &str = "中文 (繁體) - KeyKey 注音輸入";
 pub const LANG_ID_TRADITIONAL_CHINESE: u16 = 0x0404;
 
 pub fn get_module_path() -> Result<Vec<u16>> {

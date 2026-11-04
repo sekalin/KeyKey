@@ -96,7 +96,7 @@ pub fn run(args: &[String]) -> i32 {
                 println!("提示：註冊 Windows 11 原生輸入法需要系統管理員權限 (Administrator)。");
                 println!("正在自動請求系統管理員權限以完成註冊 (請在出現的 UAC 提示視窗中點擊「是」)...");
                 if request_elevation("register-elevated") {
-                    println!("已成功取得權限並完成註冊！現在可按 Win + Space 切換為「琦琦注音」。");
+                    println!("已成功取得權限並完成註冊！現在可按 Win + Space 切換為「KeyKey 注音輸入」。");
                     return 0;
                 }
                 println!("若未授權 UAC，您也可以在開始選單中以「系統管理員身分」開啟終端機後再執行 register。");

@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title KeyKey 琦琦注音 - Windows 11 解除安裝程式
+title KeyKey 注音輸入 - Windows 11 解除安裝程式
 
 net session >nul 2>&1
 if %errorLevel% NEQ 0 (
@@ -12,7 +12,7 @@ if %errorLevel% NEQ 0 (
 pushd "%~dp0"
 
 echo ===================================================================
-echo     KeyKey (琦琦注音) - Windows 11 輸入法解除安裝程式
+echo     KeyKey 注音輸入 - Windows 11 輸入法解除安裝程式
 echo ===================================================================
 echo.
 

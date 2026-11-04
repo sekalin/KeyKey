@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title KeyKey 琦琦注音 - Windows 11 安裝程式
+title KeyKey 注音輸入 - Windows 11 安裝程式
 
 :: Check for Administrator privileges and elevate if needed
 net session >nul 2>&1
@@ -23,7 +23,7 @@ if not exist "target\release\keykey_tsf.dll" (
 )
 
 echo ===================================================================
-echo     KeyKey (琦琦注音) - Windows 11 TSF 輸入法安裝與啟用程式
+echo     KeyKey 注音輸入 - Windows 11 TSF 輸入法安裝與啟用程式
 echo ===================================================================
 echo.
 
@@ -46,7 +46,7 @@ start ctfmon.exe
 
 echo.
 echo ===================================================================
-echo  [成功] 琦琦注音 (KeyKey) 已成功安裝並啟用！
+echo  [成功] KeyKey 注音輸入 已成功安裝並啟用！
 echo  現在您可以按下快速鍵 [Win + Space] 或 [Shift + Alt] 切換使用。
 echo ===================================================================
 echo.

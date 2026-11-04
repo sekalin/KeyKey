@@ -1,9 +1,9 @@
-# KeyKey (Yahoo! 奇摩輸入法 / 琦琦注音) - Windows 11 TSF 原生重構版
+# KeyKey 注音輸入 - Windows 11 TSF 原生重構版
 
 [![CI](https://github.com/sekalin/KeyKey/actions/workflows/rust.yml/badge.svg)](https://github.com/sekalin/KeyKey/actions)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE.txt)
 
-> **KeyKey** 專案源自於經典開源輸入法 **Yahoo! 奇摩輸入法 (Yahoo! KeyKey)**，社群亦常依其英文讀音稱之為 **「琦琦注音 / 琦琦輸入法」**。  
+> **KeyKey 注音輸入** 專案源自於經典開源輸入法 **Yahoo! 奇摩輸入法 (Yahoo! KeyKey)**。  
 > 本專案以 **100% 純 Rust** 重新打造，全面擁抱 **Windows 11 原生 Text Services Framework (TSF)** 標準架構，擺脫過往 IMM32 舊式視窗相容性問題，並同時原生支援 **Win64 (64 位元)** 與 **Win32 (32 位元 WOW64)** 應用程式。
 
 ---
@@ -38,9 +38,10 @@
 
 1. **原版 Yahoo! 奇摩輸入法 (Yahoo! KeyKey)**:
    * 官方開源專案版本：`YahooKeyKey-Source-1.1.2528` (New BSD License)。
+   * 本專案的核心字詞表與對照資料（如 `bpmf.cin`）直接取自原版 Yahoo! KeyKey。
    * 官方網站歷史存檔：[Yahoo! KeyKey](http://tw.media.yahoo.com/keykey/)。
-2. **社群重啟與詞庫參考專案**:
-   * **[polobread/KeyKey (琦琦輸入法 琦琦注音)](https://github.com/polobread/KeyKey)**：非常感謝社群專案 `polobread/KeyKey` 針對 Yahoo! 奇摩輸入法的現代化整理，並整合擴充了現代繁體中文詞庫（包含小麥注音 McBopomofo 及分類詞庫資料），為現代詞庫的擴充提供了極佳的參考依據。
+2. **外部詞庫參考資源 (Optional Modern Reference)**:
+   * **[polobread/KeyKey](https://github.com/polobread/KeyKey)**：社群另一開源復刻專案。**本專案目前未直接引用其程式碼或字詞庫**（目前核心 100% 來自原版 Yahoo! KeyKey 與純 Rust 引擎），此處列出作為未來擴充現代新詞詞庫（如 McBopomofo 小麥注音詞表及分類詞庫）之參考資源。
 3. **中央研究院語言學研究所平衡語料庫 (Sinica Corpus)**:
    * 台灣繁體中文詞頻與詞庫關聯資料基礎。
 4. **OpenVanilla 專案 (OpenVanilla Input Method Project)**:
@@ -77,7 +78,7 @@ KeyKey/
    * 將輸入法 COM 伺服器註冊至 Windows 11 系統（包含 64 位元與 WOW6432Node）。
    * 將 KeyKey 登記至 Windows 11 語言清單 (`0404:{B892F1C2-88E4-4866-96D5-812C465EB86B}{6786A76E-6F3C-4318-A785-5AE4E8251268}`)。
    * 重啟 Windows 文字服務（`ctfmon.exe`）。
-3. 安裝完成後，即可按下 <kbd>Win</kbd> + <kbd>Space</kbd> 切換為 **「中文（台灣）- 琦琦注音 (KeyKey)」** 進行打字！
+3. 安裝完成後，即可按下 <kbd>Win</kbd> + <kbd>Space</kbd> 切換為 **「中文（台灣）- KeyKey 注音輸入」** 進行打字！
 
 ### 方式 2：解除安裝
 * 執行 [`uninstall_admin.bat`](file:///D:/dev/KeyKey/uninstall_admin.bat)，將會自動反註冊 COM 伺服器並自語言清單中安全移除。
