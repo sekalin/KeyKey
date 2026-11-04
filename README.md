@@ -67,13 +67,17 @@
 ```text
 KeyKey/
 ├── crates/
-│   ├── keykey-core/           # 純 Rust 注音輸入法核心（音節組字、字表解析、候選字分頁）
-│   ├── keykey-tsf/            # Windows 11 TSF TIP 實作（COM 服務、EditSession、候選字 UI）
+│   ├── keykey-core/           # 純 Rust 注音輸入法核心（音節組字、字表解析、擴充詞庫）
+│   │   └── data/              # 內建 Bopomofo 字表 (bpmf.cin, bpmf-ext.cin, phrases.cin)
+│   ├── keykey-tsf/            # Windows 11 TSF TIP 實作（COM 服務、EditSession、自繪候選字 UI）
 │   └── keykey-tools/          # 輸入法註冊管理與測試 CLI 工具
-├── DataSource-1.1.2528/       # Yahoo! KeyKey 原始字詞庫與語料庫資料
-├── YahooKeyKey-Source-1.1.2528/# Yahoo! KeyKey 歷史 C++ 原始碼與資料表
+├── data/
+│   ├── phrases/               # 現代專業分類詞庫 TSV 原始檔
+│   └── overrides/             # 補充注音對照詞表 (Keke-AddBpmf.txt)
 ├── scripts/
 │   ├── build_all.ps1          # 一鍵雙架構 (x86_64 + i686) Release 建置腳本
+│   ├── download_phrases.ps1   # 現代詞庫下載腳本
+│   ├── generate_phrases.py    # 詞庫編譯腳本
 │   └── enable_ime.ps1         # Windows 11 語言清單同步腳本
 ├── install_admin.bat          # 系統管理員一鍵安裝與啟用
 ├── uninstall_admin.bat        # 系統管理員一鍵解除安裝

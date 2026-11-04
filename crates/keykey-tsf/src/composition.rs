@@ -68,6 +68,9 @@ impl KeyKeyEditSession_Impl {
                 };
 
                 if comp_lock.is_none() {
+                    if text_wide.is_empty() {
+                        return Ok(());
+                    }
                     let mut selections = [TF_SELECTION::default(); 1];
                     let mut fetched = 0;
                     unsafe {
@@ -99,6 +102,15 @@ impl KeyKeyEditSession_Impl {
                         let range = comp.GetRange()?;
                         range.SetText(ec, 0, &text_wide)?;
                         comp.EndComposition(ec)?;
+                        let _ = range.Collapse(ec, TF_ANCHOR_END);
+                        let sel = TF_SELECTION {
+                            range: std::mem::ManuallyDrop::new(Some(range)),
+                            style: TF_SELECTIONSTYLE {
+                                ase: TF_AE_NONE,
+                                fInterimChar: windows::Win32::Foundation::BOOL(0),
+                            },
+                        };
+                        let _ = self.context.SetSelection(ec, &[sel]);
                     }
                 } else {
                     let mut selections = [TF_SELECTION::default(); 1];
@@ -108,6 +120,15 @@ impl KeyKeyEditSession_Impl {
                         if fetched > 0 {
                             if let Some(range) = selections[0].range.as_ref() {
                                 range.SetText(ec, 0, &text_wide)?;
+                                let _ = range.Collapse(ec, TF_ANCHOR_END);
+                                let sel = TF_SELECTION {
+                                    range: std::mem::ManuallyDrop::new(Some(range.clone())),
+                                    style: TF_SELECTIONSTYLE {
+                                        ase: TF_AE_NONE,
+                                        fInterimChar: windows::Win32::Foundation::BOOL(0),
+                                    },
+                                };
+                                let _ = self.context.SetSelection(ec, &[sel]);
                             }
                         }
                     }

@@ -6,10 +6,7 @@ use std::time::Instant;
 #[test]
 fn test_load_real_bpmf_cin() {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // crates
-    path.pop(); // root
-    path.push("YahooKeyKey-Source-1.1.2528");
-    path.push("DataTables");
+    path.push("data");
     path.push("bpmf.cin");
 
     assert!(path.exists(), "bpmf.cin must exist at {:?}", path);
@@ -57,10 +54,7 @@ fn test_load_real_bpmf_cin() {
 #[test]
 fn test_load_real_bpmf_ext_cin() {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // crates
-    path.pop(); // root
-    path.push("YahooKeyKey-Source-1.1.2528");
-    path.push("DataTables");
+    path.push("data");
     path.push("bpmf-ext.cin");
 
     assert!(path.exists(), "bpmf-ext.cin must exist at {:?}", path);

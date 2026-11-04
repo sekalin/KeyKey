@@ -4,10 +4,7 @@ use std::path::PathBuf;
 
 fn load_real_cin() -> CinTable {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // crates
-    path.pop(); // root
-    path.push("YahooKeyKey-Source-1.1.2528");
-    path.push("DataTables");
+    path.push("data");
     path.push("bpmf.cin");
 
     CinTable::load_from_file(&path).expect("Failed to load bpmf.cin")

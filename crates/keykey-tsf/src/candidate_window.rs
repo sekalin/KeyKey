@@ -94,7 +94,7 @@ impl CustomCandidateWindow {
 
             let raw_data = Box::into_raw(Box::new(data));
 
-            let hwnd = CreateWindowExW(
+            let hwnd = match CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                 CLASS_NAME,
                 w!("KeyKey Candidates"),
@@ -107,7 +107,13 @@ impl CustomCandidateWindow {
                 None,
                 hinstance,
                 Some(raw_data as *const _ as _),
-            )?;
+            ) {
+                Ok(h) if !h.0.is_null() => h,
+                _ => {
+                    let _ = Box::from_raw(raw_data);
+                    return Err(windows::core::Error::from_win32());
+                }
+            };
 
             // Apply Windows 11 Modern Rounded Corners
             let preference = DWMWCP_ROUND;
@@ -151,7 +157,17 @@ impl CustomCandidateWindow {
             d.current_page = page as u32;
             d.selection_index = 0;
         }
+        let (win_width, win_height) = self.calculate_dimensions();
         unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                win_width,
+                win_height,
+                SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER,
+            );
             let _ = InvalidateRect(self.hwnd, None, BOOL(0));
         }
     }
@@ -350,7 +366,16 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
 
     // Double buffering
     let mem_dc = CreateCompatibleDC(hdc);
+    if mem_dc.0.is_null() {
+        let _ = EndPaint(hwnd, &ps);
+        return;
+    }
     let mem_bmp = CreateCompatibleBitmap(hdc, width, height);
+    if mem_bmp.0.is_null() {
+        let _ = DeleteDC(mem_dc);
+        let _ = EndPaint(hwnd, &ps);
+        return;
+    }
     let old_bmp = SelectObject(mem_dc, mem_bmp);
 
     // Modern Windows 11 Fluent Soft Gray / Off-White background
@@ -420,7 +445,8 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
                 };
 
                 // Highlight selected candidate with active accent background pill
-                if page_idx as u32 == d.selection_index {
+                let global_idx = (start + page_idx) as u32;
+                if global_idx == d.selection_index || page_idx as u32 == d.selection_index {
                     let sel_brush = CreateSolidBrush(COLORREF(0x00E2E8F0)); // Win11 subtle gray selection
                     FillRect(mem_dc, &item_rc, sel_brush);
                     let _ = DeleteObject(sel_brush);
@@ -450,7 +476,7 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
                 let _ = DrawTextW(mem_dc, &mut cand_wide[..cand_len], &mut text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
                 d.item_rects.push(CandidateItemRect {
-                    index: page_idx as u32,
+                    index: global_idx,
                     rect: item_rc,
                 });
 
@@ -462,13 +488,13 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
             let mut page_wide: Vec<u16> = page_text.encode_utf16().chain(std::iter::once(0)).collect();
             SetTextColor(mem_dc, COLORREF(0x0094A3B8));
             let mut page_rc = RECT {
-                left: width - 52,
+                left: width - 56,
                 top: 12,
                 right: width - 8,
                 bottom: height - 10,
             };
             let page_len = page_wide.len() - 1;
-            let _ = DrawTextW(mem_dc, &mut page_wide[..page_len], &mut page_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            let _ = DrawTextW(mem_dc, &mut page_wide[..page_len], &mut page_rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         }
     }
 
@@ -619,5 +645,44 @@ mod tests {
         // Clamping negative left
         let (lx, _) = clamp_to_monitor(-50000, 100, 300, 46);
         assert!(lx > -50000);
+    }
+
+    #[test]
+    fn test_candidate_window_click_multipage_global_index() {
+        let win = CustomCandidateWindow::new().expect("Failed to create CustomCandidateWindow");
+        let selected = Rc::new(Cell::new(None));
+        let sel_clone = selected.clone();
+        win.set_on_select(move |idx| {
+            sel_clone.set(Some(idx));
+        });
+
+        // 15 candidates: page 0 has 0..8, page 1 has 9..14
+        let test_cands: Vec<String> = (0..15).map(|i| format!("候選詞{}", i)).collect();
+        win.show(test_cands, 0, 0, None, None, 0);
+
+        // Turn to page 1 (second page)
+        win.update_page(1);
+        unsafe {
+            paint_candidate_window(win.hwnd);
+        }
+
+        // Click first candidate on page 1
+        {
+            let data = win.data.borrow();
+            assert!(!data.item_rects.is_empty());
+            assert_eq!(data.item_rects[0].index, 9); // Must be global index 9, NOT relative 0!
+
+            let first_rc = data.item_rects[0].rect;
+            let click_x = (first_rc.left + first_rc.right) / 2;
+            let click_y = (first_rc.top + first_rc.bottom) / 2;
+            let lparam_click = LPARAM(((click_y as isize) << 16) | (click_x as isize & 0xFFFF));
+
+            unsafe {
+                let _ = candidate_wndproc(win.hwnd, WM_LBUTTONDOWN, WPARAM(0), lparam_click);
+            }
+        }
+
+        assert_eq!(selected.get(), Some(9));
+        win.hide();
     }
 }

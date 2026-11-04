@@ -500,3 +500,63 @@ fn test_e2e_anti_hang_chaos_input_and_underflow() {
         assert!(harness.tip_processor.Deactivate().is_ok());
     }
 }
+
+#[test]
+fn test_e2e_tsf_candidate_backspace_and_enter_handling() {
+    let harness = match TsfTestHarness::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    unsafe {
+        // 1. Type ㄅ(1) ㄨ(j) ˋ(4) -> Opens candidate list for 1j4
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'J' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'4' as usize), LPARAM(0));
+
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_some());
+        assert!(harness.tip_raw.candidate_ui.is_visible());
+
+        // 2. While candidate list is open, Backspace must be intercepted (BOOL 1)
+        let test_bs = harness.key_sink.OnTestKeyDown(
+            Some(&harness.context),
+            WPARAM(VK_BACK.0 as usize),
+            LPARAM(0),
+        ).unwrap();
+        assert_eq!(test_bs, BOOL(1), "Backspace must be intercepted while candidate window is open");
+
+        let down_bs = harness.key_sink.OnKeyDown(
+            Some(&harness.context),
+            WPARAM(VK_BACK.0 as usize),
+            LPARAM(0),
+        ).unwrap();
+        assert_eq!(down_bs, BOOL(1));
+
+        // Candidate window must be closed, and tone removed (leaving ㄅㄨ)
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
+        assert_eq!(harness.tip_raw.engine.borrow().syllable.to_cin_code(), "1j");
+
+        // 3. Re-enter tone '4' to reopen candidate window
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'4' as usize), LPARAM(0));
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_some());
+
+        // 4. While candidate list is open, Enter must be intercepted (BOOL 1) and commit raw symbols
+        let test_enter = harness.key_sink.OnTestKeyDown(
+            Some(&harness.context),
+            WPARAM(VK_RETURN.0 as usize),
+            LPARAM(0),
+        ).unwrap();
+        assert_eq!(test_enter, BOOL(1), "Enter must be intercepted while candidate window is open");
+
+        let down_enter = harness.key_sink.OnKeyDown(
+            Some(&harness.context),
+            WPARAM(VK_RETURN.0 as usize),
+            LPARAM(0),
+        ).unwrap();
+        assert_eq!(down_enter, BOOL(1));
+
+        // Candidate window must close, and engine resets
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
+        assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
+    }
+}

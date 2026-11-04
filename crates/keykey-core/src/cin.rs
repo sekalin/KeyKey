@@ -18,7 +18,7 @@ pub struct CinTable {
 }
 
 pub const DEFAULT_BPMF_CIN: &[u8] =
-    include_bytes!("../../../YahooKeyKey-Source-1.1.2528/DataTables/bpmf.cin");
+    include_bytes!("../data/bpmf.cin");
 pub const DEFAULT_PHRASES_CIN: &[u8] =
     include_bytes!("../data/phrases.cin");
 

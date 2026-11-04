@@ -53,8 +53,8 @@ for tsv_path in glob.glob(os.path.join(tsv_dir, '*.tsv')):
                     if first_code and first_code != full_code:
                         entries.append((first_code, phrase))
 
-# 2. Parse YahooKeyKey Overrides/Keke-AddBpmf.txt
-keke_path = os.path.join(os.path.dirname(__file__), '..', 'YahooKeyKey-Source-1.1.2528', 'Distributions', 'Takao', 'DataSource', 'Overrides', 'Keke-AddBpmf.txt')
+# 2. Parse Overrides/Keke-AddBpmf.txt
+keke_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'overrides', 'Keke-AddBpmf.txt')
 if os.path.exists(keke_path):
     with open(keke_path, 'r', encoding='utf-8', errors='ignore') as f:
         for line in f:

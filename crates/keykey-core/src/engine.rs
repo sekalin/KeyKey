@@ -144,6 +144,31 @@ impl KeyKeyEngine {
                         },
                     ];
                 }
+                KeyCode::Backspace => {
+                    self.candidate_list = None;
+                    self.syllable.backspace();
+                    let display_text = self.cin_table.keys_to_symbols(&self.syllable.to_cin_code());
+                    let cursor_pos = display_text.chars().count();
+                    return vec![
+                        EngineAction::HideCandidates,
+                        EngineAction::UpdateComposition {
+                            display_text,
+                            cursor_pos,
+                        },
+                    ];
+                }
+                KeyCode::Enter => {
+                    let display_text = self.cin_table.keys_to_symbols(&self.syllable.to_cin_code());
+                    self.reset();
+                    return vec![
+                        EngineAction::HideCandidates,
+                        EngineAction::UpdateComposition {
+                            display_text: String::new(),
+                            cursor_pos: 0,
+                        },
+                        EngineAction::Commit(display_text),
+                    ];
+                }
                 _ => return vec![EngineAction::Consumed],
             }
         }
@@ -524,5 +549,49 @@ j ㄨ
         // Press '9' which is in selkey "123456789" but index 8 doesn't exist
         let actions = engine.handle_key(KeyCode::Char('9'));
         assert_eq!(actions, vec![EngineAction::Consumed]);
+    }
+
+    #[test]
+    fn test_engine_candidate_backspace_and_enter() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        // 1. Backspace when candidates are open
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        engine.handle_key(KeyCode::Char('4')); // candidate window open
+        assert!(engine.candidate_list.is_some());
+
+        let bs_actions = engine.handle_key(KeyCode::Backspace);
+        assert!(engine.candidate_list.is_none());
+        assert_eq!(
+            bs_actions,
+            vec![
+                EngineAction::HideCandidates,
+                EngineAction::UpdateComposition {
+                    display_text: "ㄅㄨ".to_string(), // tone 'ˋ' removed
+                    cursor_pos: 2,
+                },
+            ]
+        );
+
+        // 2. Enter when candidates are open commits raw phonetic symbols
+        engine.handle_key(KeyCode::Char('4')); // reopen candidate window
+        assert!(engine.candidate_list.is_some());
+
+        let enter_actions = engine.handle_key(KeyCode::Enter);
+        assert!(engine.candidate_list.is_none());
+        assert!(engine.syllable.is_empty());
+        assert_eq!(
+            enter_actions,
+            vec![
+                EngineAction::HideCandidates,
+                EngineAction::UpdateComposition {
+                    display_text: String::new(),
+                    cursor_pos: 0,
+                },
+                EngineAction::Commit("ㄅㄨˋ".to_string()),
+            ]
+        );
     }
 }

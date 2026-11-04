@@ -33,10 +33,9 @@ pub const GUID_KEYKEY_PROFILE: GUID =
 
 pub static DLL_INSTANCE: AtomicIsize = AtomicIsize::new(0);
 
-// Embedded default Bopomofo table from DataTables/bpmf.cin
+// Re-export embedded default Bopomofo table
 #[allow(dead_code)]
-pub const DEFAULT_BPMF_CIN: &[u8] =
-    include_bytes!("../../../YahooKeyKey-Source-1.1.2528/DataTables/bpmf.cin");
+pub use keykey_core::cin::DEFAULT_BPMF_CIN;
 
 #[no_mangle]
 pub extern "system" fn DllMain(
@@ -397,15 +396,9 @@ impl KeyKeyTip_Impl {
             match keystroke {
                 KeyStroke::CommitDirect(_) => return Ok(BOOL(1)),
                 KeyStroke::Engine(keycode) => {
-                    // If candidate list is active, we consume candidate selection & navigation keys
+                    // If candidate list is active, we consume candidate selection, navigation, editing & cancellation keys
                     if engine.candidate_list.is_some() {
-                        match keycode {
-                            KeyCode::Char(c) if engine.cin_table.selkey.contains(c) => return Ok(BOOL(1)),
-                            KeyCode::Space | KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp | KeyCode::Escape => {
-                                return Ok(BOOL(1));
-                            }
-                            _ => return Ok(BOOL(0)),
-                        }
+                        return Ok(BOOL(1));
                     }
 
                     // If composing a syllable
@@ -421,9 +414,15 @@ impl KeyKeyTip_Impl {
                         }
                     }
 
-                    // If empty, check if key is a valid Bopomofo initial key
+                    // If empty, check if key is a valid Bopomofo syllable starter (consonant, medial, or rhyme)
                     if let KeyCode::Char(c) = keycode {
-                        if keykey_core::bopomofo::classify_key(c) != keykey_core::ComponentType::Unknown && c != ' ' {
+                        let comp = keykey_core::bopomofo::classify_key(c);
+                        if matches!(
+                            comp,
+                            keykey_core::ComponentType::Consonant
+                                | keykey_core::ComponentType::Medial
+                                | keykey_core::ComponentType::Rhyme
+                        ) {
                             return Ok(BOOL(1));
                         }
                     }
@@ -845,9 +844,20 @@ mod tests {
             unsafe { key_sink.OnTestKeyDown(None, WPARAM(VK_ESCAPE.0 as usize), LPARAM(0)) }.unwrap(),
             BOOL(1)
         );
-        // Non-candidate key
+        // Candidate list active: any key is consumed to protect document
         assert_eq!(
             unsafe { key_sink.OnTestKeyDown(None, WPARAM(b'Z' as usize), LPARAM(0)) }.unwrap(),
+            BOOL(1)
+        );
+
+        // Engine reset: non-initial or unmapped key returns BOOL(0)
+        engine.borrow_mut().reset();
+        assert_eq!(
+            unsafe { key_sink.OnTestKeyDown(None, WPARAM(b'4' as usize), LPARAM(0)) }.unwrap(),
+            BOOL(0)
+        );
+        assert_eq!(
+            unsafe { key_sink.OnTestKeyDown(None, WPARAM(VK_F1.0 as usize), LPARAM(0)) }.unwrap(),
             BOOL(0)
         );
 

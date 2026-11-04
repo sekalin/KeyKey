@@ -70,12 +70,11 @@ impl SyllableBuffer {
                 Ok(true)
             }
             ComponentType::Tone => {
+                // If buffer is empty, a tone cannot start a syllable
+                if self.is_empty() {
+                    return Ok(false);
+                }
                 if ch == ' ' {
-                    // Space represents tone 1 (no tone suffix in CIN keycode)
-                    // If buffer is empty, space shouldn't be consumed as tone
-                    if self.is_empty() {
-                        return Ok(false);
-                    }
                     self.tone = Some(' ');
                 } else {
                     self.tone = Some(ch);
@@ -243,6 +242,19 @@ mod tests {
         syl.feed_key(' ').unwrap(); // Space (1st tone)
         assert!(syl.is_complete());
         assert_eq!(syl.to_cin_code(), "1j"); // tone 1 has no suffix
+    }
+
+    #[test]
+    fn test_syllable_cannot_start_with_tone() {
+        let mut syl = SyllableBuffer::new();
+        // Feeding tones on an empty buffer must return Ok(false) and not complete
+        assert_eq!(syl.feed_key(' '), Ok(false));
+        assert_eq!(syl.feed_key('3'), Ok(false)); // ˇ
+        assert_eq!(syl.feed_key('4'), Ok(false)); // ˋ
+        assert_eq!(syl.feed_key('6'), Ok(false)); // ˊ
+        assert_eq!(syl.feed_key('7'), Ok(false)); // ˙
+        assert!(syl.is_empty());
+        assert!(!syl.is_complete());
     }
 
     #[test]
