@@ -43,7 +43,7 @@
 
 1. **原版 Yahoo! 奇摩輸入法 (Yahoo! KeyKey)**:
    * 官方開源專案版本：`YahooKeyKey-Source-1.1.2528` (New BSD License)。
-   * 本專案的核心基礎注音字表（`bpmf.cin`）與補充詞庫對照表（`Keke-AddBpmf.txt`）直接源自原版 Yahoo! KeyKey。
+   * 本專案僅提取其最核心的基礎注音字表（`bpmf.cin`、`bpmf-ext.cin`）與補充詞庫對照表（`Keke-AddBpmf.txt`），其餘上千個無關的歷史 C++ 與舊專案檔案已全數移除；提取之字表現獨立存放於專案自身的 [`crates/keykey-core/data/`](file:///D:/dev/KeyKey/crates/keykey-core/data) 與 [`data/overrides/`](file:///D:/dev/KeyKey/data/overrides) 中。
    * 官方網站歷史存檔：[Yahoo! KeyKey](http://tw.media.yahoo.com/keykey/)。
 2. **現代專業分類詞庫整合來源 ([polobread/KeyKey](https://github.com/polobread/KeyKey))**:
    * 參考並整合社群專案 `polobread/KeyKey` 所收錄之現代台灣專業用語詞庫集合（`chichi77Collection`），包含：
