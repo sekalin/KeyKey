@@ -83,13 +83,13 @@ pub enum KeyStroke {
     ITfCompartmentEventSink
 )]
 pub struct KeyKeyTip {
-    client_id: Rc<Cell<u32>>,
-    thread_mgr: Rc<RefCell<Option<ITfThreadMgr>>>,
-    engine: Rc<RefCell<KeyKeyEngine>>,
-    active_composition: Rc<RefCell<Option<ITfComposition>>>,
-    candidate_ui: CandidateUIManager,
-    shift_alone: Cell<bool>,
-    compartment_cookie: Cell<Option<u32>>,
+    pub client_id: Rc<Cell<u32>>,
+    pub thread_mgr: Rc<RefCell<Option<ITfThreadMgr>>>,
+    pub engine: Rc<RefCell<KeyKeyEngine>>,
+    pub active_composition: Rc<RefCell<Option<ITfComposition>>>,
+    pub candidate_ui: CandidateUIManager,
+    pub shift_alone: Cell<bool>,
+    pub compartment_cookie: Cell<Option<u32>>,
 }
 
 impl KeyKeyTip {
