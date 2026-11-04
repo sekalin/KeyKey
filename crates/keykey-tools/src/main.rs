@@ -23,12 +23,12 @@ fn sync_language_list_and_refresh(enable: bool) {
     let tip = "0404:{B892F1C2-88E4-4866-96D5-812C465EB86B}{6786A76E-6F3C-4318-A785-5AE4E8251268}";
     let script = if enable {
         format!(
-            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }}; if ($zh -and ($zh.InputMethodTips -notcontains $tip)) {{ $zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $list -Force }}; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe",
+            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }}; if ($zh -and ($zh.InputMethodTips -notcontains $tip)) {{ $zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $list -Force }}; if (-not (Get-Process ctfmon -ErrorAction SilentlyContinue)) {{ Start-Process ctfmon.exe }}",
             tip
         )
     } else {
         format!(
-            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }}; if ($zh -and ($zh.InputMethodTips -contains $tip)) {{ [void]$zh.InputMethodTips.Remove($tip); Set-WinUserLanguageList $list -Force }}; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe",
+            "$tip = '{}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object {{ $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }}; if ($zh -and ($zh.InputMethodTips -contains $tip)) {{ [void]$zh.InputMethodTips.Remove($tip); Set-WinUserLanguageList $list -Force }}; if (-not (Get-Process ctfmon -ErrorAction SilentlyContinue)) {{ Start-Process ctfmon.exe }}",
             tip
         )
     };
@@ -144,8 +144,8 @@ pub fn run(args: &[String]) -> i32 {
             let cin_table = CinTable::load_default();
             let mut engine = KeyKeyEngine::new(cin_table);
 
-            let sequence = ['a', '1', 'j', '4', '9', '1']; // 'a' (ignored/fallback), ㄅ+ㄨ+ˋ, '9' (out-of-range -> Consumed), '1' (select 1)
-            println!("Simulating input sequence: a (英文直通), 1 (ㄅ), j (ㄨ), 4 (ˋ), 9 (無效選字), 1 (選第1字)");
+            let sequence = ['a', '1', 'q', '1', 'j', '4', '9', '1']; // 'a' (英文直通), 1+q (逼聲其他動作), 1 (ㄅ), j (ㄨ), 4 (ˋ), 9 (無效選字), 1 (選第1字)
+            println!("Simulating input sequence: a (英文直通), 1+q (無效組合), 1 (ㄅ), j (ㄨ), 4 (ˋ), 9 (無效選字), 1 (選第1字)");
 
             for key in sequence {
                 println!("--- Input key: '{}' ---", key);
@@ -168,8 +168,8 @@ pub fn run(args: &[String]) -> i32 {
                         EngineAction::HideCandidates => {
                             println!("  [隱藏候選字框]");
                         }
-                        _ => {
-                            println!("  [其他動作]");
+                        EngineAction::Consumed | EngineAction::Ignored => {
+                            println!("  [吸收或放行動作]");
                         }
                     }
                 }
@@ -198,12 +198,10 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let args: Vec<String> = env::args().collect();
     let code = run(&args);
-    if code != 0 {
-        std::process::exit(code);
-    }
+    std::process::ExitCode::from(code as u8)
 }
 
 #[cfg(test)]

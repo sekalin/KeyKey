@@ -91,6 +91,15 @@ pub struct KeyKeyTip {
     pub candidate_ui: CandidateUIManager,
     pub shift_alone: Cell<bool>,
     pub compartment_cookie: Cell<Option<u32>>,
+    pub has_focus: Cell<bool>,
+}
+
+thread_local! {
+    static TEST_SHIFT_DOWN: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+pub fn set_test_shift_down(val: Option<bool>) {
+    TEST_SHIFT_DOWN.with(|c| c.set(val));
 }
 
 impl KeyKeyTip {
@@ -106,6 +115,7 @@ impl KeyKeyTip {
         let thread_mgr: Rc<RefCell<Option<ITfThreadMgr>>> = Rc::new(RefCell::new(None));
         let active_composition: Rc<RefCell<Option<ITfComposition>>> = Rc::new(RefCell::new(None));
         let candidate_ui = CandidateUIManager::new();
+        let has_focus = Cell::new(true);
 
         // Wire candidate list mouse finalization callback
         let cand_mgr_clone = candidate_ui.clone();
@@ -156,6 +166,7 @@ impl KeyKeyTip {
             candidate_ui,
             shift_alone: Cell::new(false),
             compartment_cookie: Cell::new(None),
+            has_focus,
         }
     }
 
@@ -186,14 +197,14 @@ impl KeyKeyTip {
     }
 
     pub(crate) fn is_shift_down(&self) -> bool {
-        if let Ok(val) = std::env::var("KEYKEY_TEST_SHIFT_DOWN") {
-            if val == "1" {
-                return true;
-            } else if val == "0" {
-                return false;
-            }
+        if let Some(val) = TEST_SHIFT_DOWN.with(|c| c.get()) {
+            return val;
         }
         unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 }
+    }
+
+    pub(crate) fn is_active_profile(&self) -> bool {
+        self.has_focus.get()
     }
 
     pub fn map_virtual_key(&self, wparam: WPARAM, is_shift: bool) -> Option<KeyStroke> {
@@ -297,6 +308,7 @@ impl ITfTextInputProcessor_Impl for KeyKeyTip_Impl {
 impl KeyKeyTip_Impl {
     fn activate_internal(&self, ptim: Option<&ITfThreadMgr>, tid: u32) -> Result<()> {
         self.client_id.set(tid);
+        self.has_focus.set(true);
         if let Ok(mut tm_lock) = self.thread_mgr.try_borrow_mut() {
             *tm_lock = ptim.cloned();
         }
@@ -326,6 +338,7 @@ impl KeyKeyTip_Impl {
     }
 
     fn deactivate_internal(&self) -> Result<()> {
+        self.has_focus.set(false);
         let tid = self.client_id.get();
         let tm = if let Ok(mut tm_lock) = self.thread_mgr.try_borrow_mut() {
             tm_lock.take()
@@ -369,6 +382,9 @@ impl ITfTextInputProcessorEx_Impl for KeyKeyTip_Impl {
 impl ITfCompartmentEventSink_Impl for KeyKeyTip_Impl {
     fn OnChange(&self, rguid: *const GUID) -> Result<()> {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !self.has_focus.get() {
+                return Ok(());
+            }
             if !rguid.is_null() && unsafe { *rguid } == GUID_COMPARTMENT_KEYBOARD_OPENCLOSE {
                 if let Some(open) = self.get_openclose_compartment() {
                     let target_mode = if open {
@@ -421,6 +437,10 @@ impl KeyKeyTip_Impl {
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
+        if !self.is_active_profile() {
+            return Ok(BOOL(0));
+        }
+
         let vk = wparam.0 as u16;
         if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
             return Ok(BOOL(0));
@@ -486,6 +506,10 @@ impl KeyKeyTip_Impl {
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
+        if !self.is_active_profile() {
+            return Ok(BOOL(0));
+        }
+
         let vk = wparam.0 as u16;
         if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
             self.shift_alone.set(true);
@@ -646,8 +670,25 @@ impl KeyKeyTip_Impl {
 }
 
 impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
-    fn OnSetFocus(&self, _fforeground: BOOL) -> Result<()> {
-        Ok(())
+    fn OnSetFocus(&self, fforeground: BOOL) -> Result<()> {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let focus = fforeground.as_bool();
+            self.has_focus.set(focus);
+            if !focus {
+                if let Ok(mut engine) = self.engine.try_borrow_mut() {
+                    if engine.candidate_list.is_some() {
+                        if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
+                            if let Some(ref tm) = *tm_lock {
+                                let _ = self.candidate_ui.close(tm);
+                            }
+                        }
+                    }
+                    engine.reset();
+                }
+            }
+            Ok(())
+        }));
+        res.unwrap_or(Ok(()))
     }
 
     fn OnTestKeyDown(
@@ -680,6 +721,9 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
+        if !self.is_active_profile() {
+            return Ok(BOOL(0));
+        }
         let vk = wparam.0 as u16;
         if vk == VK_CAPITAL.0 {
             return Ok(BOOL(1));
@@ -694,6 +738,9 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
         _lparam: LPARAM,
     ) -> Result<BOOL> {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !self.is_active_profile() {
+                return Ok(BOOL(0));
+            }
             let vk = wparam.0 as u16;
             if vk == VK_CAPITAL.0 {
                 return Ok(BOOL(1));
@@ -843,11 +890,11 @@ mod tests {
         assert_eq!(tip.map_virtual_key(WPARAM(VK_NEXT.0 as usize), true), Some(KeyStroke::Engine(KeyCode::PageDown)));
 
         // Shift helper test
-        std::env::set_var("KEYKEY_TEST_SHIFT_DOWN", "1");
+        set_test_shift_down(Some(true));
         assert!(tip.is_shift_down());
-        std::env::set_var("KEYKEY_TEST_SHIFT_DOWN", "0");
+        set_test_shift_down(Some(false));
         assert!(!tip.is_shift_down());
-        std::env::remove_var("KEYKEY_TEST_SHIFT_DOWN");
+        set_test_shift_down(None);
 
         // Shifted punctuations
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_COMMA.0 as usize), true), Some(KeyStroke::CommitDirect("，".to_string())));
@@ -879,11 +926,34 @@ mod tests {
 
     #[test]
     fn test_tip_sink_callbacks() {
-        let tip = KeyKeyTip::new();
+        let default_cin = CinTable::load_from_reader(DEFAULT_BPMF_CIN).unwrap();
+        let engine = Rc::new(RefCell::new(KeyKeyEngine::new(default_cin)));
+        let tip = KeyKeyTip::with_engine(engine.clone());
         let key_sink: ITfKeyEventSink = tip.into();
 
+        // 1. Initial focus: bopomofo key '1' is intercepted
         assert_eq!(unsafe { key_sink.OnSetFocus(BOOL(1)) }.unwrap(), ());
+        assert_eq!(unsafe { key_sink.OnTestKeyDown(None, WPARAM(b'1' as usize), LPARAM(0)) }.unwrap(), BOOL(1));
+
+        // Open candidates before focus loss to verify candidate closing on focus loss
+        engine.borrow_mut().handle_key(KeyCode::Char('1'));
+        engine.borrow_mut().handle_key(KeyCode::Char('j'));
+        engine.borrow_mut().handle_key(KeyCode::Char('4'));
+        assert!(engine.borrow().candidate_list.is_some());
+
+        // 2. User switches to another IME (such as Going IME) -> OnSetFocus(FALSE)
         assert_eq!(unsafe { key_sink.OnSetFocus(BOOL(0)) }.unwrap(), ());
+        assert!(engine.borrow().candidate_list.is_none());
+
+        // In this state, ALL keys pass through without interference (BOOL 0)
+        assert_eq!(unsafe { key_sink.OnTestKeyDown(None, WPARAM(b'1' as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(b'1' as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnTestKeyUp(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnKeyUp(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+
+        // 3. User switches back to KeyKey -> OnSetFocus(TRUE)
+        assert_eq!(unsafe { key_sink.OnSetFocus(BOOL(1)) }.unwrap(), ());
+        assert_eq!(unsafe { key_sink.OnTestKeyDown(None, WPARAM(b'1' as usize), LPARAM(0)) }.unwrap(), BOOL(1));
 
         assert_eq!(unsafe { key_sink.OnTestKeyUp(None, WPARAM(0), LPARAM(0)) }.unwrap(), BOOL(0));
         assert_eq!(unsafe { key_sink.OnKeyUp(None, WPARAM(0), LPARAM(0)) }.unwrap(), BOOL(0));
@@ -1050,6 +1120,10 @@ mod tests {
 
                         let tip2 = KeyKeyTip::new();
                         *tip2.thread_mgr.borrow_mut() = Some(mgr.clone());
+                        tip2.has_focus.set(false);
+                        assert!(!tip2.is_active_profile());
+                        tip2.has_focus.set(true);
+                        let _ = tip2.is_active_profile();
                         let _ = tip2.get_openclose_compartment();
                         tip2.set_openclose_compartment(false);
                         tip2.set_openclose_compartment(true);
@@ -1171,6 +1245,15 @@ mod tests {
         assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(b'1' as usize), LPARAM(0)) }.unwrap(), BOOL(0));
         assert_eq!(unsafe { key_sink.OnKeyUp(None, WPARAM(VK_RSHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
         assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::Bopomofo);
+
+        // 3b. Shift key up when candidate list is active -> cancels candidates
+        engine.borrow_mut().handle_key(KeyCode::Char('1'));
+        engine.borrow_mut().handle_key(KeyCode::Char('j'));
+        engine.borrow_mut().handle_key(KeyCode::Char('4'));
+        assert!(engine.borrow().candidate_list.is_some());
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(VK_SHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert_eq!(unsafe { key_sink.OnKeyUp(None, WPARAM(VK_SHIFT.0 as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+        assert!(engine.borrow().candidate_list.is_none());
 
         // 4. Compartment sink OnChange
         let comp_sink: ITfCompartmentEventSink = key_sink.cast().unwrap();

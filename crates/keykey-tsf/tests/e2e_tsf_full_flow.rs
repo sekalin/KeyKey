@@ -54,6 +54,7 @@ impl TsfTestHarness {
                 candidate_ui: tip.candidate_ui.clone(),
                 shift_alone: std::cell::Cell::new(false),
                 compartment_cookie: std::cell::Cell::new(None),
+                has_focus: std::cell::Cell::new(true),
             };
 
             let tip_processor: ITfTextInputProcessorEx = tip.into();
@@ -710,10 +711,10 @@ fn test_e2e_tsf_shifted_punctuation_and_uppercase_auto_commits_prefix() {
 
         // Now simulate user typing Shift + 1 ('！') while candidate window is open:
         // Set KEYKEY_TEST_SHIFT_DOWN so map_virtual_key and is_shift_down() evaluate with Shift active
-        std::env::set_var("KEYKEY_TEST_SHIFT_DOWN", "1");
+        keykey_tsf::set_test_shift_down(Some(true));
         let res_excl = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0)).unwrap();
         assert_eq!(res_excl, BOOL(1));
-        std::env::remove_var("KEYKEY_TEST_SHIFT_DOWN");
+        keykey_tsf::set_test_shift_down(None);
 
         // The candidate list must now be closed and engine reset
         assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
@@ -725,10 +726,10 @@ fn test_e2e_tsf_shifted_punctuation_and_uppercase_auto_commits_prefix() {
         assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
 
         // Now simulate user typing Shift + A ('A') while composing
-        std::env::set_var("KEYKEY_TEST_SHIFT_DOWN", "1");
+        keykey_tsf::set_test_shift_down(Some(true));
         let res_a = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'A' as usize), LPARAM(0)).unwrap();
         assert_eq!(res_a, BOOL(1));
-        std::env::remove_var("KEYKEY_TEST_SHIFT_DOWN");
+        keykey_tsf::set_test_shift_down(None);
 
         assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
     }

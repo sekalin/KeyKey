@@ -1,4 +1,4 @@
-﻿# KeyKey 注音輸入 - Windows 11 解除安裝腳本
+# KeyKey 注音輸入 - Windows 11 解除安裝腳本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -40,8 +40,9 @@ if ($zh -and ($zh.InputMethodTips -contains $tip)) {
     Set-WinUserLanguageList $list -Force
 }
 
-Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue
-Start-Process ctfmon.exe
+if (-not (Get-Process ctfmon -ErrorAction SilentlyContinue)) {
+    Start-Process ctfmon.exe
+}
 
 Write-Host ""
 Write-Host "===================================================================" -ForegroundColor Cyan

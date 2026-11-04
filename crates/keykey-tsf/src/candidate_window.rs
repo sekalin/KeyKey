@@ -38,8 +38,8 @@ impl Default for CandidateWindowData {
 }
 
 pub struct CustomCandidateWindow {
-    hwnd: HWND,
-    data: Rc<RefCell<CandidateWindowData>>,
+    pub(crate) hwnd: HWND,
+    pub(crate) data: Rc<RefCell<CandidateWindowData>>,
 }
 
 pub fn clamp_to_monitor(mut target_x: i32, mut target_y: i32, win_width: i32, win_height: i32) -> (i32, i32) {
@@ -643,6 +643,13 @@ mod tests {
         let (w, h) = win.calculate_dimensions();
         assert!(w >= 260);
         assert_eq!(h, 54);
+
+        // Test multipage rendering with paint
+        let multi_cands: Vec<String> = (0..25).map(|i| format!("字{}", i)).collect();
+        win.show(multi_cands, 0, 0, None, None, 0);
+        unsafe {
+            paint_candidate_window(win.hwnd);
+        }
 
         // Update page while visible
         win.update_page(1);

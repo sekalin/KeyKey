@@ -337,6 +337,14 @@ mod tests {
                 let edit_session6: ITfEditSession = sess6.into();
                 let _ = edit_session6.DoEditSession(1);
 
+                // 6b. UpdateComposition with empty string when composition is active (clears and ends composition)
+                let comp_empty: ITfComposition = MockComposition.into();
+                let comp_cell_empty = Rc::new(RefCell::new(Some(comp_empty)));
+                let sess_empty = KeyKeyEditSession::new(ctx.clone(), EditAction::UpdateComposition(String::new()), comp_cell_empty.clone(), None);
+                let es_empty: ITfEditSession = sess_empty.into();
+                assert!(es_empty.DoEditSession(1).is_ok());
+                assert!(comp_cell_empty.borrow().is_none());
+
                 // 7. Anti-Hang Reentrancy test: active_composition already mutably borrowed
                 let comp_cell_locked = Rc::new(RefCell::new(None));
                 let sess_locked = KeyKeyEditSession::new(ctx.clone(), EditAction::Commit("鎖".into()), comp_cell_locked.clone(), None);

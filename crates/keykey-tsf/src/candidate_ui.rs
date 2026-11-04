@@ -225,12 +225,9 @@ impl CandidateUIManager {
     }
 
     pub fn take_finalized_candidate(&self) -> Option<String> {
-        if let Some(idx) = self.data.finalized_selection.take() {
-            if let Ok(list) = self.data.candidates.try_borrow() {
-                return list.get(idx as usize).cloned();
-            }
-        }
-        None
+        let idx = self.data.finalized_selection.take()?;
+        let list = self.data.candidates.try_borrow().ok()?;
+        list.get(idx as usize).cloned()
     }
 
     pub fn is_visible(&self) -> bool {
@@ -402,17 +399,43 @@ mod tests {
     #[test]
     fn test_candidate_ui_lifecycle() {
         use windows::Win32::System::Com::*;
+        let mgr1 = CandidateUIManager::new();
+        mgr1.set_on_finalize(|_| {});
+        mgr1.ensure_custom_window(); // triggers closure registration in ensure_custom_window
+        if let Ok(win_lock) = mgr1.custom_window.try_borrow() {
+            if let Some(ref win) = *win_lock {
+                if let Ok(d) = win.data.try_borrow() {
+                    if let Some(ref cb) = d.on_select {
+                        cb(0);
+                    }
+                }
+            }
+        }
+
+        let mgr = CandidateUIManager::new();
+        assert!(!mgr.is_visible());
+        mgr.ensure_custom_window();
+        mgr.set_on_finalize(|_| {}); // triggers closure registration in set_on_finalize
+        mgr.ensure_custom_window(); // idempotent
+        if let Ok(win_lock) = mgr.custom_window.try_borrow() {
+            if let Some(ref win) = *win_lock {
+                if let Ok(d) = win.data.try_borrow() {
+                    if let Some(ref cb) = d.on_select {
+                        cb(0);
+                    }
+                }
+            }
+        }
+
+        // Test take_finalized_candidate
+        mgr.data.finalized_selection.set(Some(0));
+        *mgr.data.candidates.borrow_mut() = vec!["候選字1".to_string()];
+        assert_eq!(mgr.take_finalized_candidate(), Some("候選字1".to_string()));
+
         unsafe {
             let _ = CoInitialize(None);
             if let Ok(tm) = CoCreateInstance::<_, ITfThreadMgr>(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) {
-                let mgr = CandidateUIManager::new();
-                assert!(!mgr.is_visible());
-
-                // Test window initialization & callback wiring before and after
-                mgr.set_on_finalize(|_| {});
-                mgr.ensure_custom_window();
-                mgr.set_on_finalize(|_| {});
-                mgr.ensure_custom_window(); // idempotent
+                let client_id = tm.Activate().unwrap_or(0);
 
                 // Test show (first time: BeginUIElement + CustomCandidateWindow)
                 let cands = vec!["候選字1".to_string(), "候選字2".to_string()];
@@ -435,6 +458,10 @@ mod tests {
                 // Test close when already closed
                 let close_again = mgr.close(&tm);
                 assert!(close_again.is_ok());
+
+                if client_id != 0 {
+                    let _ = tm.Deactivate();
+                }
             }
         }
     }

@@ -1,4 +1,4 @@
-﻿# KeyKey 注音輸入 - Windows 11 安裝與啟用腳本
+# KeyKey 注音輸入 - Windows 11 安裝與啟用腳本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -56,9 +56,10 @@ Write-Host "[2/3] 正在同步 Windows 11 語言清單並加入 KeyKey..." -Fore
 & "$PSScriptRoot\enable_ime.ps1"
 
 Write-Host ""
-Write-Host "[3/3] 正在重啟 Windows 系統文字服務 (ctfmon)..." -ForegroundColor Green
-Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue
-Start-Process ctfmon.exe
+Write-Host "[3/3] 正在確認 Windows 系統文字服務 (ctfmon) 運行狀態..." -ForegroundColor Green
+if (-not (Get-Process ctfmon -ErrorAction SilentlyContinue)) {
+    Start-Process ctfmon.exe
+}
 
 Write-Host ""
 Write-Host "===================================================================" -ForegroundColor Cyan
