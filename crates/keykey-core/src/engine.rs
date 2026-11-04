@@ -21,6 +21,8 @@ pub enum KeyCode {
     Up,
     PageDown,
     PageUp,
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +147,7 @@ impl KeyKeyEngine {
                     }
                     return vec![EngineAction::Consumed];
                 }
-                KeyCode::Down | KeyCode::PageDown => {
+                KeyCode::Down | KeyCode::PageDown | KeyCode::Right => {
                     if candidates.next_page() {
                         let items: Vec<(char, String)> = candidates
                             .current_page_items()
@@ -162,7 +164,7 @@ impl KeyKeyEngine {
                     }
                     return vec![EngineAction::Consumed];
                 }
-                KeyCode::Up | KeyCode::PageUp => {
+                KeyCode::Up | KeyCode::PageUp | KeyCode::Left => {
                     if candidates.prev_page() {
                         let items: Vec<(char, String)> = candidates
                             .current_page_items()
@@ -248,7 +250,7 @@ impl KeyKeyEngine {
                     if self.syllable.is_complete() {
                         // Look up candidates with MRU frequency reordering
                         let code = self.syllable.to_cin_code();
-                        if let Some(cand_vec) = self.lookup_candidates(&code) {
+                        if let Some(cand_vec) = self.lookup_candidates(&code).filter(|v| !v.is_empty()) {
                             let cand_list = CandidateList::new(cand_vec, &self.cin_table.selkey);
                             let items: Vec<(char, String)> = cand_list
                                 .current_page_items()
@@ -783,5 +785,37 @@ z ㄈ
         );
         assert!(engine.candidate_list.is_none());
         assert!(engine.syllable.is_empty());
+    }
+
+    #[test]
+    fn test_engine_arrow_left_right_page_navigation() {
+        let mut table = CinTable::new();
+        table.selkey = "123456789".to_string();
+        table.key_names.insert('1', "ㄅ".to_string());
+        table.key_names.insert('j', "ㄨ".to_string());
+        table.key_names.insert('4', "ˋ".to_string());
+        let cands: Vec<String> = (1..=25).map(|i| format!("字{}", i)).collect();
+        table.char_defs.insert("1j4".to_string(), cands);
+        let mut engine = KeyKeyEngine::new(table);
+
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        engine.handle_key(KeyCode::Char('4'));
+        assert!(engine.candidate_list.is_some());
+        assert_eq!(engine.candidate_list.as_ref().unwrap().current_page(), 0);
+
+        // Right arrow moves to next page
+        let nav_right = engine.handle_key(KeyCode::Right);
+        assert!(matches!(nav_right[0], EngineAction::ShowCandidates { page: 1, .. }));
+        assert_eq!(engine.candidate_list.as_ref().unwrap().current_page(), 1);
+
+        // Left arrow moves back to previous page
+        let nav_left = engine.handle_key(KeyCode::Left);
+        assert!(matches!(nav_left[0], EngineAction::ShowCandidates { page: 0, .. }));
+        assert_eq!(engine.candidate_list.as_ref().unwrap().current_page(), 0);
+
+        // Left arrow at page 0 is safely consumed
+        let consumed = engine.handle_key(KeyCode::Left);
+        assert_eq!(consumed, vec![EngineAction::Consumed]);
     }
 }

@@ -693,3 +693,96 @@ fn test_e2e_tsf_caps_lock_mode_toggle_and_tray_sync() {
         assert_eq!(test_bpmf, BOOL(1));
     }
 }
+
+#[test]
+fn test_e2e_tsf_shifted_punctuation_and_uppercase_auto_commits_prefix() {
+    let harness = match TsfTestHarness::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    unsafe {
+        // 1. Compose ㄅ (1) + ㄨ (j) + ˋ (4) -> Candidate window opens with "不" as Candidate 1
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'J' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'4' as usize), LPARAM(0));
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_some());
+
+        // Now simulate user typing Shift + 1 ('！') while candidate window is open:
+        // Set KEYKEY_TEST_SHIFT_DOWN so map_virtual_key and is_shift_down() evaluate with Shift active
+        std::env::set_var("KEYKEY_TEST_SHIFT_DOWN", "1");
+        let res_excl = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0)).unwrap();
+        assert_eq!(res_excl, BOOL(1));
+        std::env::remove_var("KEYKEY_TEST_SHIFT_DOWN");
+
+        // The candidate list must now be closed and engine reset
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
+        assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
+
+        // 2. Compose partial syllable: ㄅ (1) without tone (no candidate window)
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0));
+        assert!(!harness.tip_raw.engine.borrow().syllable.is_empty());
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
+
+        // Now simulate user typing Shift + A ('A') while composing
+        std::env::set_var("KEYKEY_TEST_SHIFT_DOWN", "1");
+        let res_a = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'A' as usize), LPARAM(0)).unwrap();
+        assert_eq!(res_a, BOOL(1));
+        std::env::remove_var("KEYKEY_TEST_SHIFT_DOWN");
+
+        assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
+    }
+}
+
+#[test]
+fn test_e2e_tsf_arrow_keys_page_navigation() {
+    let harness = match TsfTestHarness::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    unsafe {
+        // Compose ㄅ (1) + ㄨ (j) + ˋ (4)
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'J' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'4' as usize), LPARAM(0));
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_some());
+
+        // Right arrow and Left arrow must be intercepted (BOOL 1)
+        let test_right = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(VK_RIGHT.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_right, BOOL(1));
+
+        let down_right = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(VK_RIGHT.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_right, BOOL(1));
+
+        let test_left = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(VK_LEFT.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_left, BOOL(1));
+
+        let down_left = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(VK_LEFT.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_left, BOOL(1));
+    }
+}
+
+#[test]
+fn test_e2e_tsf_shift_alone_cancels_composition_and_toggles_mode() {
+    let harness = match TsfTestHarness::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    unsafe {
+        // Start composing: '1' (ㄅ)
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0));
+        assert!(!harness.tip_raw.engine.borrow().syllable.is_empty());
+
+        // Press Shift down
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(VK_SHIFT.0 as usize), LPARAM(0));
+
+        // Release Shift up -> toggles to English and cancels composition
+        let _ = harness.key_sink.OnKeyUp(Some(&harness.context), WPARAM(VK_SHIFT.0 as usize), LPARAM(0));
+
+        assert_eq!(harness.tip_raw.engine.borrow().mode, InputMode::English);
+        assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
+    }
+}

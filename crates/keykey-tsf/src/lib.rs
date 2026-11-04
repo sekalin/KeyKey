@@ -185,10 +185,34 @@ impl KeyKeyTip {
         }
     }
 
+    pub(crate) fn is_shift_down(&self) -> bool {
+        if let Ok(val) = std::env::var("KEYKEY_TEST_SHIFT_DOWN") {
+            if val == "1" {
+                return true;
+            } else if val == "0" {
+                return false;
+            }
+        }
+        unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 }
+    }
+
     pub fn map_virtual_key(&self, wparam: WPARAM, is_shift: bool) -> Option<KeyStroke> {
         let vk = wparam.0 as u16;
         if is_shift {
             match VIRTUAL_KEY(vk) {
+                // Editing & navigation keys with Shift
+                VK_BACK => Some(KeyStroke::Engine(KeyCode::Backspace)),
+                VK_RETURN => Some(KeyStroke::Engine(KeyCode::Enter)),
+                VK_ESCAPE => Some(KeyStroke::Engine(KeyCode::Escape)),
+                VK_SPACE => Some(KeyStroke::Engine(KeyCode::Space)),
+                VK_LEFT => Some(KeyStroke::Engine(KeyCode::Left)),
+                VK_RIGHT => Some(KeyStroke::Engine(KeyCode::Right)),
+                VK_DOWN => Some(KeyStroke::Engine(KeyCode::Down)),
+                VK_UP => Some(KeyStroke::Engine(KeyCode::Up)),
+                VK_PRIOR => Some(KeyStroke::Engine(KeyCode::PageUp)),
+                VK_NEXT => Some(KeyStroke::Engine(KeyCode::PageDown)),
+
+                // Shifted Chinese punctuation marks
                 VK_OEM_COMMA => Some(KeyStroke::CommitDirect("，".to_string())),
                 VK_OEM_PERIOD => Some(KeyStroke::CommitDirect("。".to_string())),
                 VK_OEM_2 => Some(KeyStroke::CommitDirect("？".to_string())),
@@ -198,14 +222,25 @@ impl KeyKeyTip {
                 VK_OEM_5 => Some(KeyStroke::CommitDirect("、".to_string())),
                 VK_OEM_7 => Some(KeyStroke::CommitDirect("”".to_string())),
                 VK_OEM_MINUS => Some(KeyStroke::CommitDirect("——".to_string())),
+                VK_OEM_PLUS => Some(KeyStroke::CommitDirect("+".to_string())),
+                VK_OEM_3 => Some(KeyStroke::CommitDirect("～".to_string())),
                 _ => {
-                    if vk == b'1' as u16 {
-                        Some(KeyStroke::CommitDirect("！".to_string()))
-                    } else if (b'A'..=b'Z').contains(&(vk as u8)) {
-                        // Direct uppercase ASCII commit
-                        Some(KeyStroke::CommitDirect(((vk as u8) as char).to_string()))
-                    } else {
-                        None
+                    match vk as u8 {
+                        b'1' => Some(KeyStroke::CommitDirect("！".to_string())),
+                        b'2' => Some(KeyStroke::CommitDirect("@".to_string())),
+                        b'3' => Some(KeyStroke::CommitDirect("#".to_string())),
+                        b'4' => Some(KeyStroke::CommitDirect("$".to_string())),
+                        b'5' => Some(KeyStroke::CommitDirect("%".to_string())),
+                        b'6' => Some(KeyStroke::CommitDirect("……".to_string())),
+                        b'7' => Some(KeyStroke::CommitDirect("&".to_string())),
+                        b'8' => Some(KeyStroke::CommitDirect("*".to_string())),
+                        b'9' => Some(KeyStroke::CommitDirect("（".to_string())),
+                        b'0' => Some(KeyStroke::CommitDirect("）".to_string())),
+                        _ if (b'A'..=b'Z').contains(&(vk as u8)) => {
+                            // Direct uppercase ASCII commit
+                            Some(KeyStroke::CommitDirect(((vk as u8) as char).to_string()))
+                        }
+                        _ => None,
                     }
                 }
             }
@@ -216,6 +251,8 @@ impl KeyKeyTip {
                 VK_RETURN => Some(KeyStroke::Engine(KeyCode::Enter)),
                 VK_ESCAPE => Some(KeyStroke::Engine(KeyCode::Escape)),
                 VK_SPACE => Some(KeyStroke::Engine(KeyCode::Space)),
+                VK_LEFT => Some(KeyStroke::Engine(KeyCode::Left)),
+                VK_RIGHT => Some(KeyStroke::Engine(KeyCode::Right)),
                 VK_DOWN => Some(KeyStroke::Engine(KeyCode::Down)),
                 VK_UP => Some(KeyStroke::Engine(KeyCode::Up)),
                 VK_PRIOR => Some(KeyStroke::Engine(KeyCode::PageUp)),
@@ -401,7 +438,7 @@ impl KeyKeyTip_Impl {
             return Ok(BOOL(0));
         }
 
-        let is_shift = unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
+        let is_shift = self.is_shift_down();
         if let Some(keystroke) = self.map_virtual_key(wparam, is_shift) {
             match keystroke {
                 KeyStroke::CommitDirect(_) => return Ok(BOOL(1)),
@@ -496,7 +533,7 @@ impl KeyKeyTip_Impl {
             return Ok(BOOL(0));
         };
 
-        let is_shift = unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
+        let is_shift = self.is_shift_down();
         let Some(keystroke) = self.map_virtual_key(wparam, is_shift) else {
             return Ok(BOOL(0));
         };
@@ -506,18 +543,32 @@ impl KeyKeyTip_Impl {
 
         match keystroke {
             KeyStroke::CommitDirect(text) => {
-                if engine.candidate_list.is_some() {
+                let mut prefix_to_commit = None;
+                if let Some(ref mut candidates) = engine.candidate_list {
+                    if let Some(cand) = candidates.select_by_index(0).map(|s| s.to_string()) {
+                        let code = engine.syllable.to_cin_code();
+                        engine.record_candidate_selection(&code, &cand);
+                        prefix_to_commit = Some(cand);
+                    }
                     if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
                         if let Some(ref tm) = *tm_lock {
                             let _ = self.candidate_ui.close(tm);
                         }
                     }
+                } else if !engine.syllable.is_empty() {
+                    let raw = engine.cin_table.keys_to_symbols(&engine.syllable.to_cin_code());
+                    prefix_to_commit = Some(raw);
                 }
                 engine.reset();
 
+                let full_text = match prefix_to_commit {
+                    Some(prefix) => format!("{}{}", prefix, text),
+                    None => text,
+                };
+
                 let session: ITfEditSession = KeyKeyEditSession::new(
                     context.clone(),
-                    EditAction::Commit(text),
+                    EditAction::Commit(full_text),
                     self.active_composition.clone(),
                     sink,
                 ).into();
@@ -650,8 +701,27 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
             if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
                 if self.shift_alone.replace(false) {
                     if let Ok(mut engine) = self.engine.try_borrow_mut() {
+                        if engine.candidate_list.is_some() {
+                            if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
+                                if let Some(ref tm) = *tm_lock {
+                                    let _ = self.candidate_ui.close(tm);
+                                }
+                            }
+                        }
+                        engine.reset();
                         let new_mode = engine.toggle_mode();
                         self.set_openclose_compartment(new_mode == keykey_core::engine::InputMode::Bopomofo);
+                    }
+                    if let Some(context) = _pic {
+                        let session: ITfEditSession = KeyKeyEditSession::new(
+                            context.clone(),
+                            EditAction::Cancel,
+                            self.active_composition.clone(),
+                            None,
+                        ).into();
+                        unsafe {
+                            let _ = context.RequestEditSession(self.client_id.get(), &session, TF_ES_READWRITE | TF_ES_SYNC);
+                        }
                     }
                 }
             }
@@ -742,6 +812,8 @@ mod tests {
         assert_eq!(tip.map_virtual_key(WPARAM(VK_RETURN.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Enter)));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_ESCAPE.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Escape)));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_SPACE.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Space)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_LEFT.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Left)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_RIGHT.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Right)));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_DOWN.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Down)));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_UP.0 as usize), false), Some(KeyStroke::Engine(KeyCode::Up)));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_PRIOR.0 as usize), false), Some(KeyStroke::Engine(KeyCode::PageUp)));
@@ -758,17 +830,47 @@ mod tests {
         assert_eq!(tip.map_virtual_key(WPARAM(b'A' as usize), false), Some(KeyStroke::Engine(KeyCode::Char('a'))));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_F1.0 as usize), false), None);
 
+        // Shifted navigation and editing keys
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_BACK.0 as usize), true), Some(KeyStroke::Engine(KeyCode::Backspace)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_RETURN.0 as usize), true), Some(KeyStroke::Engine(KeyCode::Enter)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_ESCAPE.0 as usize), true), Some(KeyStroke::Engine(KeyCode::Escape)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_SPACE.0 as usize), true), Some(KeyStroke::Engine(KeyCode::Space)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_LEFT.0 as usize), true), Some(KeyStroke::Engine(KeyCode::Left)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_RIGHT.0 as usize), true), Some(KeyStroke::Engine(KeyCode::Right)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_DOWN.0 as usize), true), Some(KeyStroke::Engine(KeyCode::Down)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_UP.0 as usize), true), Some(KeyStroke::Engine(KeyCode::Up)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_PRIOR.0 as usize), true), Some(KeyStroke::Engine(KeyCode::PageUp)));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_NEXT.0 as usize), true), Some(KeyStroke::Engine(KeyCode::PageDown)));
+
+        // Shift helper test
+        std::env::set_var("KEYKEY_TEST_SHIFT_DOWN", "1");
+        assert!(tip.is_shift_down());
+        std::env::set_var("KEYKEY_TEST_SHIFT_DOWN", "0");
+        assert!(!tip.is_shift_down());
+        std::env::remove_var("KEYKEY_TEST_SHIFT_DOWN");
+
         // Shifted punctuations
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_COMMA.0 as usize), true), Some(KeyStroke::CommitDirect("，".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_PERIOD.0 as usize), true), Some(KeyStroke::CommitDirect("。".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_2.0 as usize), true), Some(KeyStroke::CommitDirect("？".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_1.0 as usize), true), Some(KeyStroke::CommitDirect("：".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(b'1' as usize), true), Some(KeyStroke::CommitDirect("！".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'2' as usize), true), Some(KeyStroke::CommitDirect("@".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'3' as usize), true), Some(KeyStroke::CommitDirect("#".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'4' as usize), true), Some(KeyStroke::CommitDirect("$".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'5' as usize), true), Some(KeyStroke::CommitDirect("%".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'6' as usize), true), Some(KeyStroke::CommitDirect("……".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'7' as usize), true), Some(KeyStroke::CommitDirect("&".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'8' as usize), true), Some(KeyStroke::CommitDirect("*".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'9' as usize), true), Some(KeyStroke::CommitDirect("（".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(b'0' as usize), true), Some(KeyStroke::CommitDirect("）".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_4.0 as usize), true), Some(KeyStroke::CommitDirect("「".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_6.0 as usize), true), Some(KeyStroke::CommitDirect("」".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_5.0 as usize), true), Some(KeyStroke::CommitDirect("、".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_7.0 as usize), true), Some(KeyStroke::CommitDirect("”".to_string())));
         assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_MINUS.0 as usize), true), Some(KeyStroke::CommitDirect("——".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_PLUS.0 as usize), true), Some(KeyStroke::CommitDirect("+".to_string())));
+        assert_eq!(tip.map_virtual_key(WPARAM(VK_OEM_3.0 as usize), true), Some(KeyStroke::CommitDirect("～".to_string())));
 
         // Shifted letter
         assert_eq!(tip.map_virtual_key(WPARAM(b'A' as usize), true), Some(KeyStroke::CommitDirect("A".to_string())));

@@ -88,6 +88,17 @@ impl KeyKeyEditSession_Impl {
                                 let ctx_comp: ITfContextComposition = self.context.cast()?;
                                 let comp = ctx_comp.StartComposition(ec, range, self.sink.as_ref())?;
                                 range.SetText(ec, 0, &text_wide)?;
+                                if let Ok(range_clone) = range.Clone() {
+                                    let _ = range_clone.Collapse(ec, TF_ANCHOR_END);
+                                    let sel = TF_SELECTION {
+                                        range: std::mem::ManuallyDrop::new(Some(range_clone)),
+                                        style: TF_SELECTIONSTYLE {
+                                            ase: TF_AE_NONE,
+                                            fInterimChar: windows::Win32::Foundation::BOOL(0),
+                                        },
+                                    };
+                                    let _ = self.context.SetSelection(ec, &[sel]);
+                                }
                                 *comp_lock = Some(comp);
                             }
                         }
@@ -96,6 +107,17 @@ impl KeyKeyEditSession_Impl {
                     unsafe {
                         let range = comp.GetRange()?;
                         range.SetText(ec, 0, &text_wide)?;
+                        if let Ok(range_clone) = range.Clone() {
+                            let _ = range_clone.Collapse(ec, TF_ANCHOR_END);
+                            let sel = TF_SELECTION {
+                                range: std::mem::ManuallyDrop::new(Some(range_clone)),
+                                style: TF_SELECTIONSTYLE {
+                                    ase: TF_AE_NONE,
+                                    fInterimChar: windows::Win32::Foundation::BOOL(0),
+                                },
+                            };
+                            let _ = self.context.SetSelection(ec, &[sel]);
+                        }
                     }
                 }
             }

@@ -32,6 +32,9 @@ fn sync_language_list_and_refresh(enable: bool) {
             tip
         )
     };
+    if env::var("KEYKEY_TEST_MOCK_POWERSHELL").is_ok() {
+        return;
+    }
     let _ = std::process::Command::new("powershell")
         .args(["-NoProfile", "-Command", &script])
         .output();
@@ -39,6 +42,7 @@ fn sync_language_list_and_refresh(enable: bool) {
 
 fn request_elevation(arg: &str) -> bool {
     if let Ok(val) = env::var("KEYKEY_TEST_UAC") {
+        let _ = format!("Start-Process -FilePath 'mock' -ArgumentList '{}' -Verb RunAs -Wait", arg);
         return val == "1";
     }
     if let Ok(exe_path) = env::current_exe() {
@@ -59,7 +63,14 @@ fn request_elevation(arg: &str) -> bool {
 
 fn register_core() -> i32 {
     println!("Registering KeyKey TSF TIP with Windows 11...");
-    match keykey_tsf::register::register_server() {
+    let reg_result = if env::var("KEYKEY_TEST_MOCK_REG_ERR").is_ok() {
+        Err(windows::core::Error::new(windows::core::HRESULT(-1), "Mock error"))
+    } else if env::var("KEYKEY_TEST_MOCK_REG").is_ok() {
+        Ok(())
+    } else {
+        keykey_tsf::register::register_server()
+    };
+    match reg_result {
         Ok(_) => {
             sync_language_list_and_refresh(true);
             println!("Successfully registered KeyKey with Windows 11!");
@@ -74,7 +85,14 @@ fn register_core() -> i32 {
 
 fn unregister_core() -> i32 {
     println!("Unregistering KeyKey TSF TIP from Windows 11...");
-    match keykey_tsf::register::unregister_server() {
+    let unreg_result = if env::var("KEYKEY_TEST_MOCK_REG_ERR").is_ok() {
+        Err(windows::core::Error::new(windows::core::HRESULT(-1), "Mock error"))
+    } else if env::var("KEYKEY_TEST_MOCK_REG").is_ok() {
+        Ok(())
+    } else {
+        keykey_tsf::register::unregister_server()
+    };
+    match unreg_result {
         Ok(_) => {
             sync_language_list_and_refresh(false);
             println!("Successfully unregistered KeyKey.");
@@ -206,6 +224,9 @@ mod tests {
 
     #[test]
     fn test_cli_register_and_unregister() {
+        env::set_var("KEYKEY_TEST_MOCK_POWERSHELL", "1");
+        env::set_var("KEYKEY_TEST_MOCK_REG", "1");
+
         let reg_code = run(&["keykey-tools".to_string(), "register-elevated".to_string()]);
         assert_eq!(reg_code, 0);
 
@@ -218,6 +239,12 @@ mod tests {
         env::set_var("KEYKEY_TEST_ELEVATED", "1");
         assert_eq!(run(&["keykey-tools".to_string(), "register".to_string()]), 0);
         assert_eq!(run(&["keykey-tools".to_string(), "unregister".to_string()]), 0);
+
+        // Test mock register error path
+        env::set_var("KEYKEY_TEST_MOCK_REG_ERR", "1");
+        assert_eq!(run(&["keykey-tools".to_string(), "register-elevated".to_string()]), 1);
+        assert_eq!(run(&["keykey-tools".to_string(), "unregister-elevated".to_string()]), 1);
+        env::remove_var("KEYKEY_TEST_MOCK_REG_ERR");
 
         // Test non-elevated simulation with UAC success
         env::set_var("KEYKEY_TEST_ELEVATED", "0");
@@ -232,6 +259,8 @@ mod tests {
 
         env::remove_var("KEYKEY_TEST_UAC");
         env::remove_var("KEYKEY_TEST_ELEVATED");
+        env::remove_var("KEYKEY_TEST_MOCK_REG");
+        env::remove_var("KEYKEY_TEST_MOCK_POWERSHELL");
     }
 
     #[test]
