@@ -116,26 +116,32 @@ impl KeyKeyTip {
         let cid_clone = client_id.clone();
 
         candidate_ui.set_on_finalize(move |idx| {
-            if let Some(ref tm) = *tm_clone.borrow() {
-                unsafe {
-                    if let Ok(doc_mgr) = tm.GetFocus() {
-                        if let Ok(context) = doc_mgr.GetTop() {
-                            let text = cand_mgr_clone.data.candidates.borrow().get(idx as usize).cloned();
-                            if let Some(text) = text {
-                                let session: ITfEditSession = KeyKeyEditSession::new(
-                                    context.clone(),
-                                    EditAction::Commit(text),
-                                    comp_clone.clone(),
-                                    None,
-                                ).into();
-                                let _ = context.RequestEditSession(cid_clone.get(), &session, TF_ES_READWRITE | TF_ES_SYNC);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Ok(tm_lock) = tm_clone.try_borrow() {
+                    if let Some(ref tm) = *tm_lock {
+                        unsafe {
+                            if let Ok(doc_mgr) = tm.GetFocus() {
+                                if let Ok(context) = doc_mgr.GetTop() {
+                                    let text = cand_mgr_clone.data.candidates.try_borrow().ok().and_then(|c| c.get(idx as usize).cloned());
+                                    if let Some(text) = text {
+                                        let session: ITfEditSession = KeyKeyEditSession::new(
+                                            context.clone(),
+                                            EditAction::Commit(text),
+                                            comp_clone.clone(),
+                                            None,
+                                        ).into();
+                                        let _ = context.RequestEditSession(cid_clone.get(), &session, TF_ES_READWRITE | TF_ES_SYNC);
+                                    }
+                                }
                             }
+                            let _ = cand_mgr_clone.close(tm);
                         }
                     }
-                    let _ = cand_mgr_clone.close(tm);
                 }
-            }
-            eng_clone.borrow_mut().reset();
+                if let Ok(mut eng) = eng_clone.try_borrow_mut() {
+                    eng.reset();
+                }
+            }));
         });
 
         Self {
@@ -150,7 +156,7 @@ impl KeyKeyTip {
     }
 
     pub fn get_openclose_compartment(&self) -> Option<bool> {
-        let tm = self.thread_mgr.borrow().clone()?;
+        let tm = self.thread_mgr.try_borrow().ok()?.clone()?;
         let comp_mgr: ITfCompartmentMgr = tm.cast().ok()?;
         unsafe {
             let comp = comp_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE).ok()?;
@@ -161,12 +167,14 @@ impl KeyKeyTip {
     }
 
     pub fn set_openclose_compartment(&self, open: bool) {
-        if let Some(ref tm) = *self.thread_mgr.borrow() {
-            if let Ok(comp_mgr) = tm.cast::<ITfCompartmentMgr>() {
-                if let Ok(comp) = unsafe { comp_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE) } {
-                    let var = windows_core::VARIANT::from(if open { 1i32 } else { 0i32 });
-                    unsafe {
-                        let _ = comp.SetValue(self.client_id.get(), &var);
+        if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
+            if let Some(ref tm) = *tm_lock {
+                if let Ok(comp_mgr) = tm.cast::<ITfCompartmentMgr>() {
+                    if let Ok(comp) = unsafe { comp_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE) } {
+                        let var = windows_core::VARIANT::from(if open { 1i32 } else { 0i32 });
+                        unsafe {
+                            let _ = comp.SetValue(self.client_id.get(), &var);
+                        }
                     }
                 }
             }
@@ -231,8 +239,26 @@ impl KeyKeyTip {
 
 impl ITfTextInputProcessor_Impl for KeyKeyTip_Impl {
     fn Activate(&self, ptim: Option<&ITfThreadMgr>, tid: u32) -> Result<()> {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.activate_internal(ptim, tid)
+        }));
+        res.unwrap_or(Ok(()))
+    }
+
+    fn Deactivate(&self) -> Result<()> {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.deactivate_internal()
+        }));
+        res.unwrap_or(Ok(()))
+    }
+}
+
+impl KeyKeyTip_Impl {
+    fn activate_internal(&self, ptim: Option<&ITfThreadMgr>, tid: u32) -> Result<()> {
         self.client_id.set(tid);
-        *self.thread_mgr.borrow_mut() = ptim.cloned();
+        if let Ok(mut tm_lock) = self.thread_mgr.try_borrow_mut() {
+            *tm_lock = ptim.cloned();
+        }
 
         if let Some(tm) = ptim {
             unsafe {
@@ -258,9 +284,14 @@ impl ITfTextInputProcessor_Impl for KeyKeyTip_Impl {
         Ok(())
     }
 
-    fn Deactivate(&self) -> Result<()> {
+    fn deactivate_internal(&self) -> Result<()> {
         let tid = self.client_id.get();
-        if let Some(tm) = self.thread_mgr.borrow_mut().take() {
+        let tm = if let Ok(mut tm_lock) = self.thread_mgr.try_borrow_mut() {
+            tm_lock.take()
+        } else {
+            None
+        };
+        if let Some(tm) = tm {
             let _ = self.candidate_ui.close(&tm);
             unsafe {
                 if let Some(cookie) = self.compartment_cookie.take() {
@@ -278,8 +309,12 @@ impl ITfTextInputProcessor_Impl for KeyKeyTip_Impl {
                 }
             }
         }
-        self.engine.borrow_mut().reset();
-        *self.active_composition.borrow_mut() = None;
+        if let Ok(mut engine) = self.engine.try_borrow_mut() {
+            engine.reset();
+        }
+        if let Ok(mut comp) = self.active_composition.try_borrow_mut() {
+            *comp = None;
+        }
         Ok(())
     }
 }
@@ -292,21 +327,25 @@ impl ITfTextInputProcessorEx_Impl for KeyKeyTip_Impl {
 
 impl ITfCompartmentEventSink_Impl for KeyKeyTip_Impl {
     fn OnChange(&self, rguid: *const GUID) -> Result<()> {
-        if !rguid.is_null() && unsafe { *rguid } == GUID_COMPARTMENT_KEYBOARD_OPENCLOSE {
-            if let Some(open) = self.get_openclose_compartment() {
-                let target_mode = if open {
-                    keykey_core::engine::InputMode::Bopomofo
-                } else {
-                    keykey_core::engine::InputMode::English
-                };
-                let mut engine = self.engine.borrow_mut();
-                if engine.mode != target_mode {
-                    engine.mode = target_mode;
-                    engine.reset();
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !rguid.is_null() && unsafe { *rguid } == GUID_COMPARTMENT_KEYBOARD_OPENCLOSE {
+                if let Some(open) = self.get_openclose_compartment() {
+                    let target_mode = if open {
+                        keykey_core::engine::InputMode::Bopomofo
+                    } else {
+                        keykey_core::engine::InputMode::English
+                    };
+                    if let Ok(mut engine) = self.engine.try_borrow_mut() {
+                        if engine.mode != target_mode {
+                            engine.mode = target_mode;
+                            engine.reset();
+                        }
+                    }
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        }));
+        res.unwrap_or(Ok(()))
     }
 }
 
@@ -316,27 +355,34 @@ impl ITfCompositionSink_Impl for KeyKeyTip_Impl {
         _ec: u32,
         _pcomposition: Option<&ITfComposition>,
     ) -> Result<()> {
-        if let Some(ref tm) = *self.thread_mgr.borrow() {
-            let _ = self.candidate_ui.close(tm);
-        }
-        self.engine.borrow_mut().reset();
-        *self.active_composition.borrow_mut() = None;
-        Ok(())
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
+                if let Some(ref tm) = *tm_lock {
+                    let _ = self.candidate_ui.close(tm);
+                }
+            }
+            if let Ok(mut engine) = self.engine.try_borrow_mut() {
+                engine.reset();
+            }
+            if let Ok(mut active) = self.active_composition.try_borrow_mut() {
+                *active = None;
+            }
+            Ok(())
+        }));
+        res.unwrap_or(Ok(()))
     }
 }
 
-impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
-    fn OnSetFocus(&self, _fforeground: BOOL) -> Result<()> {
-        Ok(())
-    }
-
-    fn OnTestKeyDown(
+impl KeyKeyTip_Impl {
+    fn on_test_key_down_internal(
         &self,
         _pic: Option<&ITfContext>,
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
-        let engine = self.engine.borrow();
+        let Ok(engine) = self.engine.try_borrow() else {
+            return Ok(BOOL(0));
+        };
         if engine.mode == keykey_core::engine::InputMode::English {
             return Ok(BOOL(0));
         }
@@ -388,7 +434,7 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
         Ok(BOOL(0))
     }
 
-    fn OnKeyDown(
+    fn on_key_down_internal(
         &self,
         pic: Option<&ITfContext>,
         wparam: WPARAM,
@@ -401,7 +447,11 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
         }
         self.shift_alone.set(false);
 
-        if self.engine.borrow().mode == keykey_core::engine::InputMode::English {
+        let Ok(mut engine) = self.engine.try_borrow_mut() else {
+            return Ok(BOOL(0));
+        };
+
+        if engine.mode == keykey_core::engine::InputMode::English {
             return Ok(BOOL(0));
         }
 
@@ -419,12 +469,14 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
 
         match keystroke {
             KeyStroke::CommitDirect(text) => {
-                if self.engine.borrow().candidate_list.is_some() {
-                    if let Some(ref tm) = *self.thread_mgr.borrow() {
-                        let _ = self.candidate_ui.close(tm);
+                if engine.candidate_list.is_some() {
+                    if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
+                        if let Some(ref tm) = *tm_lock {
+                            let _ = self.candidate_ui.close(tm);
+                        }
                     }
                 }
-                self.engine.borrow_mut().reset();
+                engine.reset();
 
                 let session: ITfEditSession = KeyKeyEditSession::new(
                     context.clone(),
@@ -438,7 +490,7 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
                 return Ok(BOOL(1));
             }
             KeyStroke::Engine(keycode) => {
-                let actions = self.engine.borrow_mut().handle_key(keycode);
+                let actions = engine.handle_key(keycode);
                 if actions.is_empty() || actions == vec![EngineAction::Ignored] {
                     return Ok(BOOL(0));
                 }
@@ -468,22 +520,24 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
                             }
                         }
                         EngineAction::ShowCandidates { page, .. } => {
-                            if let Some(ref tm) = *self.thread_mgr.borrow() {
-                                let all_cands: Vec<String> = self
-                                    .engine
-                                    .borrow()
-                                    .candidate_list
-                                    .as_ref()
-                                    .map(|cl| cl.all_candidates().to_vec())
-                                    .unwrap_or_default();
-                                let _ = self.candidate_ui.show(tm, all_cands, page);
+                            if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
+                                if let Some(ref tm) = *tm_lock {
+                                    let all_cands: Vec<String> = engine
+                                        .candidate_list
+                                        .as_ref()
+                                        .map(|cl| cl.all_candidates().to_vec())
+                                        .unwrap_or_default();
+                                    let _ = self.candidate_ui.show(tm, all_cands, page);
+                                }
                             }
                         }
                         EngineAction::HideCandidates => {
-                            if let Some(ref tm) = *self.thread_mgr.borrow() {
-                                let _ = self.candidate_ui.close(tm);
+                            if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
+                                if let Some(ref tm) = *tm_lock {
+                                    let _ = self.candidate_ui.close(tm);
+                                }
                             }
-                            if self.engine.borrow().syllable.is_empty() {
+                            if engine.syllable.is_empty() {
                                 let session: ITfEditSession = KeyKeyEditSession::new(
                                     context.clone(),
                                     EditAction::Cancel,
@@ -503,6 +557,36 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
 
         Ok(BOOL(1))
     }
+}
+
+impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
+    fn OnSetFocus(&self, _fforeground: BOOL) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnTestKeyDown(
+        &self,
+        pic: Option<&ITfContext>,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> Result<BOOL> {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.on_test_key_down_internal(pic, wparam, lparam)
+        }));
+        res.unwrap_or(Ok(BOOL(0)))
+    }
+
+    fn OnKeyDown(
+        &self,
+        pic: Option<&ITfContext>,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> Result<BOOL> {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.on_key_down_internal(pic, wparam, lparam)
+        }));
+        res.unwrap_or(Ok(BOOL(0)))
+    }
 
     fn OnTestKeyUp(
         &self,
@@ -519,14 +603,19 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
-        let vk = wparam.0 as u16;
-        if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
-            if self.shift_alone.replace(false) {
-                let new_mode = self.engine.borrow_mut().toggle_mode();
-                self.set_openclose_compartment(new_mode == keykey_core::engine::InputMode::Bopomofo);
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let vk = wparam.0 as u16;
+            if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
+                if self.shift_alone.replace(false) {
+                    if let Ok(mut engine) = self.engine.try_borrow_mut() {
+                        let new_mode = engine.toggle_mode();
+                        self.set_openclose_compartment(new_mode == keykey_core::engine::InputMode::Bopomofo);
+                    }
+                }
             }
-        }
-        Ok(BOOL(0))
+            Ok(BOOL(0))
+        }));
+        res.unwrap_or(Ok(BOOL(0)))
     }
 
     fn OnPreservedKey(
@@ -988,6 +1077,51 @@ mod tests {
             // CreateInstance valid
             let res: Result<ITfTextInputProcessorEx> = factory.CreateInstance(None);
             assert!(res.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_anti_hang_reentrancy_resilience() {
+        let default_cin = CinTable::load_from_reader(DEFAULT_BPMF_CIN).unwrap();
+        let engine = Rc::new(RefCell::new(KeyKeyEngine::new(default_cin)));
+        let tip = KeyKeyTip::with_engine(engine.clone());
+        let key_sink: ITfKeyEventSink = tip.into();
+
+        // 1. Simulate re-entrant keystroke when engine is already mutably borrowed
+        {
+            let _engine_guard = engine.borrow_mut();
+            unsafe {
+                // Must return Ok(BOOL(0)) to pass-through without panic or hanging
+                let res_test = key_sink.OnTestKeyDown(None, WPARAM(b'1' as usize), LPARAM(0));
+                assert_eq!(res_test.unwrap(), BOOL(0));
+
+                let res_down = key_sink.OnKeyDown(None, WPARAM(b'1' as usize), LPARAM(0));
+                assert_eq!(res_down.unwrap(), BOOL(0));
+
+                let res_up = key_sink.OnKeyUp(None, WPARAM(VK_SHIFT.0 as usize), LPARAM(0));
+                assert_eq!(res_up.unwrap(), BOOL(0));
+            }
+        }
+
+        // 2. Simulate re-entrant activation / termination when thread_mgr or composition is mutably borrowed
+        let tip2 = KeyKeyTip::new();
+        let tm_cell = tip2.thread_mgr.clone();
+        let comp_cell = tip2.active_composition.clone();
+        assert_eq!(tip2.get_openclose_compartment(), None);
+        tip2.set_openclose_compartment(true);
+
+        let proc: ITfTextInputProcessorEx = tip2.into();
+        {
+            let _tm_guard = tm_cell.borrow_mut();
+            let _comp_guard = comp_cell.borrow_mut();
+
+            unsafe {
+                assert!(proc.Activate(None, 99).is_ok());
+                assert!(proc.Deactivate().is_ok());
+
+                let comp_sink: ITfCompositionSink = proc.cast().unwrap();
+                assert!(comp_sink.OnCompositionTerminated(0, None).is_ok());
+            }
         }
     }
 }

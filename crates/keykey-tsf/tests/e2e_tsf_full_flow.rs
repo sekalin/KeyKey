@@ -46,10 +46,15 @@ impl TsfTestHarness {
             let _ = thread_mgr.SetFocus(&doc_mgr);
 
             let tip = KeyKeyTip::new();
-            let tip_raw = KeyKeyTip::with_engine(tip.engine.clone());
-            // Clone tip candidate_ui & fields before moving into processor
-            *tip_raw.thread_mgr.borrow_mut() = Some(thread_mgr.clone());
-            tip_raw.client_id.set(client_id);
+            let tip_raw = KeyKeyTip {
+                client_id: tip.client_id.clone(),
+                thread_mgr: tip.thread_mgr.clone(),
+                engine: tip.engine.clone(),
+                active_composition: tip.active_composition.clone(),
+                candidate_ui: tip.candidate_ui.clone(),
+                shift_alone: std::cell::Cell::new(false),
+                compartment_cookie: std::cell::Cell::new(None),
+            };
 
             let tip_processor: ITfTextInputProcessorEx = tip.into();
             tip_processor.Activate(Some(&thread_mgr), client_id)?;
@@ -401,5 +406,97 @@ fn test_e2e_tsf_escape_and_cancel() {
 
         // Syllable buffer cancelled and cleared
         assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
+    }
+}
+
+#[test]
+fn test_e2e_anti_hang_rapid_keystroke_stress() {
+    let harness = match TsfTestHarness::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    unsafe {
+        let keys_to_stress = [
+            WPARAM(b'1' as usize),
+            WPARAM(b'J' as usize),
+            WPARAM(b'4' as usize),
+            WPARAM(VK_SPACE.0 as usize),
+            WPARAM(VK_BACK.0 as usize),
+            WPARAM(VK_ESCAPE.0 as usize),
+            WPARAM(b'A' as usize),
+            WPARAM(VK_OEM_COMMA.0 as usize),
+            WPARAM(0xFFFF), // Invalid virtual key
+            WPARAM(0),      // Null virtual key
+        ];
+
+        let start = std::time::Instant::now();
+        const ITERATIONS: usize = 10_000;
+
+        for i in 0..ITERATIONS {
+            let vk = keys_to_stress[i % keys_to_stress.len()];
+            // Both OnTestKeyDown and OnKeyDown must complete without stall
+            let _ = harness.key_sink.OnTestKeyDown(Some(&harness.context), vk, LPARAM(0));
+            let _ = harness.key_sink.OnKeyDown(Some(&harness.context), vk, LPARAM(0));
+            if i % 100 == 0 {
+                let _ = harness.key_sink.OnKeyUp(Some(&harness.context), WPARAM(VK_SHIFT.0 as usize), LPARAM(0));
+            }
+        }
+
+        let elapsed = start.elapsed();
+        // 10,000 keystrokes must finish well within 1.0 second (typically < 100ms)
+        assert!(
+            elapsed.as_secs_f64() < 1.0,
+            "Anti-hang stress test took too long: {:?}",
+            elapsed
+        );
+
+        // Verify IME remains 100% operational after intense stress
+        let test_post = harness.key_sink.OnTestKeyDown(
+            Some(&harness.context),
+            WPARAM(b'1' as usize),
+            LPARAM(0),
+        ).unwrap();
+        assert_eq!(test_post, BOOL(1));
+    }
+}
+
+#[test]
+fn test_e2e_anti_hang_chaos_input_and_underflow() {
+    let harness = match TsfTestHarness::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    unsafe {
+        // 1. Spam 1,000 Backspaces on completely empty buffer - must pass through to app and never hang
+        for _ in 0..1000 {
+            let res = harness.key_sink.OnKeyDown(
+                Some(&harness.context),
+                WPARAM(VK_BACK.0 as usize),
+                LPARAM(0),
+            ).unwrap();
+            assert_eq!(res, BOOL(0)); // Pass-through to host app
+        }
+
+        // 2. Spam 1,000 Escapes on empty buffer - must pass through and never hang
+        for _ in 0..1000 {
+            let res = harness.key_sink.OnKeyDown(
+                Some(&harness.context),
+                WPARAM(VK_ESCAPE.0 as usize),
+                LPARAM(0),
+            ).unwrap();
+            assert_eq!(res, BOOL(0));
+        }
+
+        // 3. Repeated rapid mode switches while sending keystrokes
+        for _ in 0..500 {
+            let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(VK_SHIFT.0 as usize), LPARAM(0));
+            let _ = harness.key_sink.OnKeyUp(Some(&harness.context), WPARAM(VK_SHIFT.0 as usize), LPARAM(0));
+            let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0));
+        }
+
+        // IME must still be alive and responsive
+        assert!(harness.tip_processor.Deactivate().is_ok());
     }
 }

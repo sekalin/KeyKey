@@ -51,10 +51,21 @@ impl KeyKeyEditSession {
 
 impl ITfEditSession_Impl for KeyKeyEditSession_Impl {
     fn DoEditSession(&self, ec: u32) -> Result<()> {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.do_edit_session_internal(ec)
+        }));
+        res.unwrap_or(Ok(()))
+    }
+}
+
+impl KeyKeyEditSession_Impl {
+    fn do_edit_session_internal(&self, ec: u32) -> Result<()> {
         match &self.action {
             EditAction::UpdateComposition(text) => {
                 let text_wide: Vec<u16> = text.encode_utf16().collect();
-                let mut comp_lock = self.active_composition.borrow_mut();
+                let Ok(mut comp_lock) = self.active_composition.try_borrow_mut() else {
+                    return Ok(());
+                };
 
                 if comp_lock.is_none() {
                     let mut selections = [TF_SELECTION::default(); 1];
@@ -79,7 +90,9 @@ impl ITfEditSession_Impl for KeyKeyEditSession_Impl {
             }
             EditAction::Commit(text) => {
                 let text_wide: Vec<u16> = text.encode_utf16().collect();
-                let mut comp_lock = self.active_composition.borrow_mut();
+                let Ok(mut comp_lock) = self.active_composition.try_borrow_mut() else {
+                    return Ok(());
+                };
 
                 if let Some(comp) = comp_lock.take() {
                     unsafe {
@@ -101,7 +114,9 @@ impl ITfEditSession_Impl for KeyKeyEditSession_Impl {
                 }
             }
             EditAction::Cancel => {
-                let mut comp_lock = self.active_composition.borrow_mut();
+                let Ok(mut comp_lock) = self.active_composition.try_borrow_mut() else {
+                    return Ok(());
+                };
                 if let Some(comp) = comp_lock.take() {
                     unsafe {
                         let range = comp.GetRange()?;
@@ -270,6 +285,16 @@ mod tests {
                 let sess6 = KeyKeyEditSession::new(ctx.clone(), EditAction::UpdateComposition("字".into()), comp_cell6.clone(), None);
                 let edit_session6: ITfEditSession = sess6.into();
                 let _ = edit_session6.DoEditSession(1);
+
+                // 7. Anti-Hang Reentrancy test: active_composition already mutably borrowed
+                let comp_cell_locked = Rc::new(RefCell::new(None));
+                let sess_locked = KeyKeyEditSession::new(ctx.clone(), EditAction::Commit("鎖".into()), comp_cell_locked.clone(), None);
+                let edit_session_locked: ITfEditSession = sess_locked.into();
+                {
+                    let _guard = comp_cell_locked.borrow_mut();
+                    // Must fail safe with Ok(()) and NEVER panic or hang
+                    assert!(edit_session_locked.DoEditSession(1).is_ok());
+                }
 
                 let _ = tm.Deactivate();
             }

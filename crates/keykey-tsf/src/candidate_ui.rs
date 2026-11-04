@@ -56,7 +56,10 @@ impl ITfUIElement_Impl for CandidateUIElement_Impl {
 
 impl ITfCandidateListUIElement_Impl for CandidateUIElement_Impl {
     fn GetUpdatedFlags(&self) -> Result<u32> {
-        Ok(self.data.updated_flags.get())
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Ok(self.data.updated_flags.get())
+        }));
+        res.unwrap_or(Ok(0))
     }
 
     fn GetDocumentMgr(&self) -> Result<ITfDocumentMgr> {
@@ -64,20 +67,30 @@ impl ITfCandidateListUIElement_Impl for CandidateUIElement_Impl {
     }
 
     fn GetCount(&self) -> Result<u32> {
-        Ok(self.data.candidates.borrow().len() as u32)
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let count = self.data.candidates.try_borrow().map(|c| c.len() as u32).unwrap_or(0);
+            Ok(count)
+        }));
+        res.unwrap_or(Ok(0))
     }
 
     fn GetSelection(&self) -> Result<u32> {
-        Ok(self.data.selection_index.get())
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Ok(self.data.selection_index.get())
+        }));
+        res.unwrap_or(Ok(0))
     }
 
     fn GetString(&self, uindex: u32) -> Result<BSTR> {
-        let list = self.data.candidates.borrow();
-        if let Some(cand) = list.get(uindex as usize) {
-            Ok(BSTR::from(cand.as_str()))
-        } else {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Ok(list) = self.data.candidates.try_borrow() {
+                if let Some(cand) = list.get(uindex as usize) {
+                    return Ok(BSTR::from(cand.as_str()));
+                }
+            }
             Ok(BSTR::default())
-        }
+        }));
+        res.unwrap_or(Ok(BSTR::default()))
     }
 
     fn GetPageIndex(
@@ -86,20 +99,23 @@ impl ITfCandidateListUIElement_Impl for CandidateUIElement_Impl {
         usize_count: u32,
         pupagesize: *mut u32,
     ) -> Result<()> {
-        let page_size = self.data.page_size as u32;
-        if !pupagesize.is_null() {
-            unsafe {
-                *pupagesize = page_size;
-            }
-        }
-        if !pindex.is_null() {
-            for i in 0..usize_count {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let page_size = self.data.page_size as u32;
+            if !pupagesize.is_null() {
                 unsafe {
-                    *pindex.add(i as usize) = i * page_size;
+                    *pupagesize = page_size;
                 }
             }
-        }
-        Ok(())
+            if !pindex.is_null() {
+                for i in 0..usize_count {
+                    unsafe {
+                        *pindex.add(i as usize) = i * page_size;
+                    }
+                }
+            }
+            Ok(())
+        }));
+        res.unwrap_or(Ok(()))
     }
 
     fn SetPageIndex(&self, _pindex: *const u32, _usize: u32) -> Result<()> {
@@ -107,28 +123,41 @@ impl ITfCandidateListUIElement_Impl for CandidateUIElement_Impl {
     }
 
     fn GetCurrentPage(&self) -> Result<u32> {
-        Ok(self.data.current_page.get())
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Ok(self.data.current_page.get())
+        }));
+        res.unwrap_or(Ok(0))
     }
 }
 
 impl ITfCandidateListUIElementBehavior_Impl for CandidateUIElement_Impl {
     fn SetSelection(&self, nindex: u32) -> Result<()> {
-        self.data.selection_index.set(nindex);
-        Ok(())
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.data.selection_index.set(nindex);
+            Ok(())
+        }));
+        res.unwrap_or(Ok(()))
     }
 
     fn Finalize(&self) -> Result<()> {
-        let sel = self.data.selection_index.get();
-        self.data.finalized_selection.set(Some(sel));
-        if let Some(ref cb) = *self.data.on_finalize.borrow() {
-            cb(sel);
-        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let sel = self.data.selection_index.get();
+            self.data.finalized_selection.set(Some(sel));
+            if let Ok(cb_lock) = self.data.on_finalize.try_borrow() {
+                if let Some(ref cb) = *cb_lock {
+                    cb(sel);
+                }
+            }
+        }));
         Ok(())
     }
 
     fn Abort(&self) -> Result<()> {
-        self.data.finalized_selection.set(None);
-        Ok(())
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.data.finalized_selection.set(None);
+            Ok(())
+        }));
+        res.unwrap_or(Ok(()))
     }
 }
 
@@ -163,16 +192,18 @@ impl CandidateUIManager {
     }
 
     pub fn set_on_finalize<F: Fn(u32) + 'static>(&self, f: F) {
-        *self.data.on_finalize.borrow_mut() = Some(Rc::new(f));
+        if let Ok(mut on_fin) = self.data.on_finalize.try_borrow_mut() {
+            *on_fin = Some(Rc::new(f));
+        }
     }
 
     pub fn take_finalized_candidate(&self) -> Option<String> {
         if let Some(idx) = self.data.finalized_selection.take() {
-            let list = self.data.candidates.borrow();
-            list.get(idx as usize).cloned()
-        } else {
-            None
+            if let Ok(list) = self.data.candidates.try_borrow() {
+                return list.get(idx as usize).cloned();
+            }
         }
+        None
     }
 
     pub fn is_visible(&self) -> bool {
@@ -185,7 +216,9 @@ impl CandidateUIManager {
         candidates: Vec<String>,
         page: usize,
     ) -> Result<()> {
-        *self.data.candidates.borrow_mut() = candidates;
+        if let Ok(mut cands) = self.data.candidates.try_borrow_mut() {
+            *cands = candidates;
+        }
         self.data.current_page.set(page as u32);
         self.data.selection_index.set(0);
         self.data.updated_flags.set(
@@ -343,6 +376,33 @@ mod tests {
                 let close_again = mgr.close(&tm);
                 assert!(close_again.is_ok());
             }
+        }
+    }
+
+    #[test]
+    fn test_candidate_ui_anti_hang_reentrancy() {
+        let mgr = CandidateUIManager::new();
+        // Mutably lock candidates to simulate a concurrent or re-entrant access
+        {
+            let _cand_guard = mgr.data.candidates.borrow_mut();
+            unsafe {
+                // Must not panic with BorrowMutError; must fail gracefully
+                assert_eq!(mgr.ui_element.GetCount().unwrap(), 0);
+                assert_eq!(mgr.ui_element.GetString(0).unwrap().to_string(), "");
+            }
+            assert_eq!(mgr.take_finalized_candidate(), None);
+        }
+
+        // Mutably lock on_finalize
+        {
+            let _finalize_guard = mgr.data.on_finalize.borrow_mut();
+            unsafe {
+                let behavior = mgr.ui_element.cast::<ITfCandidateListUIElementBehavior>().unwrap();
+                // Finalize must not panic or hang
+                assert!(behavior.Finalize().is_ok());
+            }
+            // set_on_finalize must not panic
+            mgr.set_on_finalize(|_| {});
         }
     }
 }

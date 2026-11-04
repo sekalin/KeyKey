@@ -3,6 +3,9 @@ use keykey_core::cin::CinTable;
 use keykey_core::engine::{EngineAction, KeyCode, KeyKeyEngine};
 
 fn is_elevated() -> bool {
+    if let Ok(val) = env::var("KEYKEY_TEST_ELEVATED") {
+        return val == "1";
+    }
     let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion".encode_utf16().chain(std::iter::once(0)).collect();
     let mut hkey = windows::Win32::System::Registry::HKEY::default();
     unsafe {
@@ -208,7 +211,13 @@ mod tests {
 
         let _ = is_elevated();
 
+        // Test elevated path
+        env::set_var("KEYKEY_TEST_ELEVATED", "1");
+        assert_eq!(run(&["keykey-tools".to_string(), "register".to_string()]), 0);
+        assert_eq!(run(&["keykey-tools".to_string(), "unregister".to_string()]), 0);
+
         // Test non-elevated simulation with UAC success
+        env::set_var("KEYKEY_TEST_ELEVATED", "0");
         env::set_var("KEYKEY_TEST_UAC", "1");
         assert_eq!(run(&["keykey-tools".to_string(), "register".to_string()]), 0);
         assert_eq!(run(&["keykey-tools".to_string(), "unregister".to_string()]), 0);
@@ -219,6 +228,7 @@ mod tests {
         assert_eq!(run(&["keykey-tools".to_string(), "unregister".to_string()]), 1);
 
         env::remove_var("KEYKEY_TEST_UAC");
+        env::remove_var("KEYKEY_TEST_ELEVATED");
     }
 
     #[test]
