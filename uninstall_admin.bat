@@ -21,7 +21,7 @@ echo [1/2] 正在從 Windows 11 反註冊 TSF 輸入法...
 
 echo.
 echo [2/2] 正在自語言清單移除並重新整理...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$tip = '0404:{B892F1C2-88E4-4866-96D5-812C465EB86B}{6786A76E-6F3C-4318-A785-5AE4E8251268}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object { $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' }; if ($zh -and ($zh.InputMethodTips -contains $tip)) { [void]$zh.InputMethodTips.Remove($tip); Set-WinUserLanguageList $list -Force }; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$tip = '0404:{B892F1C2-88E4-4866-96D5-812C465EB86B}{6786A76E-6F3C-4318-A785-5AE4E8251268}'; $list = Get-WinUserLanguageList; $zh = $list | Where-Object { $_.LanguageTag -like 'zh-Hant*' -or $_.LanguageTag -like 'zh-TW*' -or $_.LanguageTag -like 'zh-HK*' }; if ($zh -and ($zh.InputMethodTips -contains $tip)) { [void]$zh.InputMethodTips.Remove($tip); Set-WinUserLanguageList $list -Force }; Stop-Process -Name ctfmon -Force -ErrorAction SilentlyContinue; Start-Process ctfmon.exe"
 
 echo.
 echo [成功] KeyKey 已完全從系統移除。
