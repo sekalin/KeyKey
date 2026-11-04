@@ -132,6 +132,36 @@ impl SyllableBuffer {
     }
 }
 
+/// Convert a Bopomofo symbol string (e.g. "ㄐㄧㄝˋ", "ㄅㄨˋ", or multi-syllable "ㄐㄧㄝˋ ㄇㄧㄢˋ")
+/// into the corresponding CIN Daqian key sequence (e.g. "ru,4", "1j4", "ru,4au04").
+pub fn bopomofo_to_cin_code(bpmf: &str) -> String {
+    let mut result = String::new();
+    for token in bpmf.split(|c: char| c.is_whitespace() || c == ',' || c == '-') {
+        if token.is_empty() {
+            continue;
+        }
+        for ch in token.chars() {
+            let key = match ch {
+                'ㄅ' => '1', 'ㄆ' => 'q', 'ㄇ' => 'a', 'ㄈ' => 'z',
+                'ㄉ' => '2', 'ㄊ' => 'w', 'ㄋ' => 's', 'ㄌ' => 'x',
+                'ㄍ' => 'e', 'ㄎ' => 'd', 'ㄏ' => 'c',
+                'ㄐ' => 'r', 'ㄑ' => 'f', 'ㄒ' => 'v',
+                'ㄓ' => '5', 'ㄔ' => 't', 'ㄕ' => 'g', 'ㄖ' => 'b',
+                'ㄗ' => 'y', 'ㄘ' => 'h', 'ㄙ' => 'n',
+                'ㄧ' => 'u', 'ㄨ' => 'j', 'ㄩ' => 'm',
+                'ㄚ' => '8', 'ㄛ' => 'i', 'ㄜ' => 'k', 'ㄝ' => ',',
+                'ㄞ' => '9', 'ㄟ' => 'o', 'ㄠ' => 'l', 'ㄡ' => '.',
+                'ㄢ' => '0', 'ㄣ' => 'p', 'ㄤ' => ';', 'ㄥ' => '/',
+                'ㄦ' => '-',
+                'ˊ' => '6', 'ˇ' => '3', 'ˋ' => '4', '˙' => '7',
+                _ => continue,
+            };
+            result.push(key);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +272,15 @@ mod tests {
         assert!(syl.backspace());
         assert!(syl.is_empty());
         assert!(!syl.backspace());
+    }
+
+    #[test]
+    fn test_bopomofo_to_cin_code() {
+        assert_eq!(bopomofo_to_cin_code("ㄅㄨˋ"), "1j4");
+        assert_eq!(bopomofo_to_cin_code("ㄐㄧㄝˋ ㄇㄧㄢˋ"), "ru,4au04");
+        assert_eq!(bopomofo_to_cin_code("ㄕˋ,ㄐㄧㄢˋ"), "g4ru04");
+        assert_eq!(bopomofo_to_cin_code("ㄖㄣˊ ㄍㄨㄥ ㄓˋ ㄏㄨㄟˋ"), "bp6ej/54cjo4");
+        assert_eq!(bopomofo_to_cin_code("ㄉㄗㄦ?"), "2y-");
+        assert_eq!(bopomofo_to_cin_code(""), "");
     }
 }

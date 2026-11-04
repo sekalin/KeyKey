@@ -123,13 +123,11 @@ pub fn run(args: &[String]) -> i32 {
         "unregister-elevated" => unregister_core(),
         "test-type" => {
             println!("=== KeyKey Typing Simulator ===");
-            let default_cin: &[u8] =
-                include_bytes!("../../../YahooKeyKey-Source-1.1.2528/DataTables/bpmf.cin");
-            let cin_table = CinTable::load_from_reader(default_cin).expect("Failed to load embedded cin");
+            let cin_table = CinTable::load_default();
             let mut engine = KeyKeyEngine::new(cin_table);
 
-            let sequence = ['a', '1', 'j', '4', '1']; // 'a' (ignored/fallback), then ㄅ + ㄨ + ˋ, then select candidate 1
-            println!("Simulating input sequence: a (英文直通), 1 (ㄅ), j (ㄨ), 4 (ˋ), 1 (選第1字)");
+            let sequence = ['a', '1', 'j', '4', '9', '1']; // 'a' (ignored/fallback), ㄅ+ㄨ+ˋ, '9' (out-of-range -> Consumed), '1' (select 1)
+            println!("Simulating input sequence: a (英文直通), 1 (ㄅ), j (ㄨ), 4 (ˋ), 9 (無效選字), 1 (選第1字)");
 
             for key in sequence {
                 println!("--- Input key: '{}' ---", key);
@@ -152,12 +150,17 @@ pub fn run(args: &[String]) -> i32 {
                         EngineAction::HideCandidates => {
                             println!("  [隱藏候選字框]");
                         }
-                        _ => {}
+                        _ => {
+                            println!("  [其他動作]");
+                        }
                     }
                 }
             }
 
-            // Also simulate Escape to test HideCandidates
+            // Also simulate composition and Escape to test HideCandidates
+            engine.handle_key(KeyCode::Char('1'));
+            engine.handle_key(KeyCode::Char('j'));
+            engine.handle_key(KeyCode::Char('4'));
             let esc_actions = engine.handle_key(KeyCode::Escape);
             for action in esc_actions {
                 if let EngineAction::HideCandidates = action {

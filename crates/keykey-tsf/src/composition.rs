@@ -290,10 +290,16 @@ mod tests {
                 let comp_cell_locked = Rc::new(RefCell::new(None));
                 let sess_locked = KeyKeyEditSession::new(ctx.clone(), EditAction::Commit("鎖".into()), comp_cell_locked.clone(), None);
                 let edit_session_locked: ITfEditSession = sess_locked.into();
+                let sess_upd = KeyKeyEditSession::new(ctx.clone(), EditAction::UpdateComposition("鎖".into()), comp_cell_locked.clone(), None);
+                let es_upd: ITfEditSession = sess_upd.into();
+                let sess_can = KeyKeyEditSession::new(ctx.clone(), EditAction::Cancel, comp_cell_locked.clone(), None);
+                let es_can: ITfEditSession = sess_can.into();
                 {
                     let _guard = comp_cell_locked.borrow_mut();
                     // Must fail safe with Ok(()) and NEVER panic or hang
                     assert!(edit_session_locked.DoEditSession(1).is_ok());
+                    assert!(es_upd.DoEditSession(1).is_ok());
+                    assert!(es_can.DoEditSession(1).is_ok());
                 }
 
                 let _ = tm.Deactivate();

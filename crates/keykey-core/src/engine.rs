@@ -510,4 +510,19 @@ j ㄨ
             }]
         );
     }
+
+    #[test]
+    fn test_engine_selkey_out_of_range() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        // 1j4 has 3 candidates ('1': 不, '2': 布, '3': 部)
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        engine.handle_key(KeyCode::Char('4'));
+
+        // Press '9' which is in selkey "123456789" but index 8 doesn't exist
+        let actions = engine.handle_key(KeyCode::Char('9'));
+        assert_eq!(actions, vec![EngineAction::Consumed]);
+    }
 }

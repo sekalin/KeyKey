@@ -17,9 +17,23 @@ pub struct CinTable {
     pub char_defs: HashMap<String, Vec<String>>,
 }
 
+pub const DEFAULT_BPMF_CIN: &[u8] =
+    include_bytes!("../../../YahooKeyKey-Source-1.1.2528/DataTables/bpmf.cin");
+pub const DEFAULT_PHRASES_CIN: &[u8] =
+    include_bytes!("../data/phrases.cin");
+
 impl CinTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Load the default combined Bopomofo single-character table and modern phrase dictionary.
+    pub fn load_default() -> Self {
+        let mut table = Self::load_from_reader(DEFAULT_BPMF_CIN).unwrap_or_default();
+        if let Ok(phrases) = Self::load_from_reader(DEFAULT_PHRASES_CIN) {
+            table.merge(phrases);
+        }
+        table
     }
 
     /// Load and parse a `.cin` file from the given file path.
@@ -199,5 +213,50 @@ j ㄨ
         let candidates = table1.lookup("1j4").unwrap();
         assert_eq!(candidates, &["不", "布", "部", "佈"]);
         assert_eq!(table1.lookup("5").unwrap(), &["ㄓ"]);
+    }
+
+    #[test]
+    fn test_load_default_and_phrases() {
+        let table = CinTable::load_default();
+        assert!(!table.char_defs.is_empty());
+        // Verify both single character and upgraded phrases are present
+        let cands_1j4 = table.lookup("1j4").expect("1j4 must exist");
+        assert!(cands_1j4.contains(&"不".to_string()));
+
+        // Modern phrase lookup (AI / Software phrase from polobread collection)
+        // "人工智慧" -> full code: bp6ej/54cjo4
+        let cands_ai = table.lookup("bp6ej/54cjo4");
+        assert!(cands_ai.is_some());
+        assert!(cands_ai.unwrap().contains(&"人工智慧".to_string()));
+
+        // Associated phrase on first syllable "bp6"
+        let cands_bp6 = table.lookup("bp6").expect("bp6 must exist");
+        assert!(cands_bp6.contains(&"人".to_string()));
+        assert!(cands_bp6.contains(&"人工智慧".to_string()));
+    }
+
+    #[test]
+    fn test_cin_big5_and_malformed_lines() {
+        // Test parsing with malformed lines in keyname and chardef
+        let malformed_cin = "%keyname begin\n\
+                             invalid_line_no_sym\n\
+                             1 ㄅ\n\
+                             %keyname end\n\
+                             %chardef begin\n\
+                             only_one_token\n\
+                             1j4 不\n\
+                             %chardef end\n";
+        let table = CinTable::load_from_reader(malformed_cin.as_bytes()).unwrap();
+        assert_eq!(table.lookup("1j4").unwrap(), &["不"]);
+
+        // Test Big5 encoding fallback via temporary file
+        let (encoded_bytes, _, _) = encoding_rs::BIG5.encode("%keyname begin\n1 ㄅ\n%keyname end\n%chardef begin\n1j4 不\n%chardef end\n");
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("test_big5_table.cin");
+        std::fs::write(&temp_file, &encoded_bytes).unwrap();
+
+        let loaded = CinTable::load_from_file(&temp_file).unwrap();
+        assert_eq!(loaded.lookup("1j4").unwrap(), &["不"]);
+        let _ = std::fs::remove_file(temp_file);
     }
 }

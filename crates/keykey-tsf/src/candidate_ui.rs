@@ -5,6 +5,8 @@ use windows_core::Interface;
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::TextServices::*;
 
+use crate::candidate_window::CustomCandidateWindow;
+
 pub const GUID_KEYKEY_CANDIDATE_UI_ELEMENT: GUID =
     GUID::from_u128(0xC58E3406_5C4F_4C23_8123_09DA3008E123);
 
@@ -166,6 +168,7 @@ pub struct CandidateUIManager {
     pub data: Rc<CandidateData>,
     pub ui_element: ITfCandidateListUIElement,
     pub ui_element_id: Rc<Cell<Option<u32>>>,
+    pub custom_window: Rc<RefCell<Option<CustomCandidateWindow>>>,
 }
 
 impl CandidateUIManager {
@@ -188,12 +191,36 @@ impl CandidateUIManager {
             data,
             ui_element,
             ui_element_id: Rc::new(Cell::new(None)),
+            custom_window: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    pub fn ensure_custom_window(&self) {
+        if let Ok(mut win_lock) = self.custom_window.try_borrow_mut() {
+            if win_lock.is_none() {
+                if let Ok(win) = CustomCandidateWindow::new() {
+                    if let Ok(on_fin) = self.data.on_finalize.try_borrow() {
+                        if let Some(ref cb) = *on_fin {
+                            let cb_clone = cb.clone();
+                            win.set_on_select(move |idx| cb_clone(idx));
+                        }
+                    }
+                    *win_lock = Some(win);
+                }
+            }
         }
     }
 
     pub fn set_on_finalize<F: Fn(u32) + 'static>(&self, f: F) {
+        let rc_f = Rc::new(f);
         if let Ok(mut on_fin) = self.data.on_finalize.try_borrow_mut() {
-            *on_fin = Some(Rc::new(f));
+            *on_fin = Some(rc_f.clone());
+        }
+        if let Ok(win_lock) = self.custom_window.try_borrow() {
+            if let Some(ref win) = *win_lock {
+                let cb = rc_f.clone();
+                win.set_on_select(move |idx| cb(idx));
+            }
         }
     }
 
@@ -207,7 +234,7 @@ impl CandidateUIManager {
     }
 
     pub fn is_visible(&self) -> bool {
-        self.ui_element_id.get().is_some()
+        self.ui_element_id.get().is_some() || self.custom_window.try_borrow().map(|w| w.as_ref().map(|cw| cw.is_visible()).unwrap_or(false)).unwrap_or(false)
     }
 
     pub fn show(
@@ -215,9 +242,12 @@ impl CandidateUIManager {
         thread_mgr: &ITfThreadMgr,
         candidates: Vec<String>,
         page: usize,
+        context: Option<&ITfContext>,
+        active_comp: Option<&ITfComposition>,
+        edit_cookie: u32,
     ) -> Result<()> {
         if let Ok(mut cands) = self.data.candidates.try_borrow_mut() {
-            *cands = candidates;
+            *cands = candidates.clone();
         }
         self.data.current_page.set(page as u32);
         self.data.selection_index.set(0);
@@ -229,21 +259,33 @@ impl CandidateUIManager {
                 | TF_CLUIE_CURRENTPAGE,
         );
 
-        let ui_mgr: ITfUIElementMgr = thread_mgr.cast()?;
-        let ui_element: ITfUIElement = self.ui_element.cast()?;
-
-        if let Some(id) = self.ui_element_id.get() {
-            unsafe {
-                ui_mgr.UpdateUIElement(id)?;
+        // 1. Windows 11 Native Candidate UI Element
+        if let Ok(ui_mgr) = thread_mgr.cast::<ITfUIElementMgr>() {
+            if let Ok(ui_element) = self.ui_element.cast::<ITfUIElement>() {
+                if let Some(id) = self.ui_element_id.get() {
+                    unsafe {
+                        let _ = ui_mgr.UpdateUIElement(id);
+                    }
+                } else {
+                    let mut show = BOOL(1);
+                    let mut id = 0u32;
+                    unsafe {
+                        if ui_mgr.BeginUIElement(&ui_element, &mut show, &mut id).is_ok() {
+                            self.ui_element_id.set(Some(id));
+                        }
+                    }
+                }
             }
-        } else {
-            let mut show = BOOL(1);
-            let mut id = 0u32;
-            unsafe {
-                ui_mgr.BeginUIElement(&ui_element, &mut show, &mut id)?;
-            }
-            self.ui_element_id.set(Some(id));
         }
+
+        // 2. Pure Rust Win32 Self-Drawn Candidate Window
+        self.ensure_custom_window();
+        if let Ok(win_lock) = self.custom_window.try_borrow() {
+            if let Some(ref win) = *win_lock {
+                win.show(candidates, page, 0, context, active_comp, edit_cookie);
+            }
+        }
+
         Ok(())
     }
 
@@ -252,9 +294,15 @@ impl CandidateUIManager {
         self.data.updated_flags.set(TF_CLUIE_CURRENTPAGE | TF_CLUIE_SELECTION);
 
         if let Some(id) = self.ui_element_id.get() {
-            let ui_mgr: ITfUIElementMgr = thread_mgr.cast()?;
-            unsafe {
-                ui_mgr.UpdateUIElement(id)?;
+            if let Ok(ui_mgr) = thread_mgr.cast::<ITfUIElementMgr>() {
+                unsafe {
+                    let _ = ui_mgr.UpdateUIElement(id);
+                }
+            }
+        }
+        if let Ok(win_lock) = self.custom_window.try_borrow() {
+            if let Some(ref win) = *win_lock {
+                win.update_page(page);
             }
         }
         Ok(())
@@ -262,9 +310,15 @@ impl CandidateUIManager {
 
     pub fn close(&self, thread_mgr: &ITfThreadMgr) -> Result<()> {
         if let Some(id) = self.ui_element_id.take() {
-            let ui_mgr: ITfUIElementMgr = thread_mgr.cast()?;
-            unsafe {
-                let _ = ui_mgr.EndUIElement(id);
+            if let Ok(ui_mgr) = thread_mgr.cast::<ITfUIElementMgr>() {
+                unsafe {
+                    let _ = ui_mgr.EndUIElement(id);
+                }
+            }
+        }
+        if let Ok(win_lock) = self.custom_window.try_borrow() {
+            if let Some(ref win) = *win_lock {
+                win.hide();
             }
         }
         Ok(())
@@ -354,9 +408,15 @@ mod tests {
                 let mgr = CandidateUIManager::new();
                 assert!(!mgr.is_visible());
 
-                // Test show (first time: BeginUIElement)
+                // Test window initialization & callback wiring before and after
+                mgr.set_on_finalize(|_| {});
+                mgr.ensure_custom_window();
+                mgr.set_on_finalize(|_| {});
+                mgr.ensure_custom_window(); // idempotent
+
+                // Test show (first time: BeginUIElement + CustomCandidateWindow)
                 let cands = vec!["候選字1".to_string(), "候選字2".to_string()];
-                let show_res = mgr.show(&tm, cands.clone(), 0);
+                let show_res = mgr.show(&tm, cands.clone(), 0, None, None, 0);
                 assert!(show_res.is_ok());
 
                 // Test update_page
@@ -364,7 +424,7 @@ mod tests {
                 assert!(upd_res.is_ok());
 
                 // Test show when already visible (UpdateUIElement)
-                let show_again_res = mgr.show(&tm, cands, 1);
+                let show_again_res = mgr.show(&tm, cands, 1, None, None, 0);
                 assert!(show_again_res.is_ok());
 
                 // Test close (EndUIElement)
@@ -400,9 +460,26 @@ mod tests {
                 let behavior = mgr.ui_element.cast::<ITfCandidateListUIElementBehavior>().unwrap();
                 // Finalize must not panic or hang
                 assert!(behavior.Finalize().is_ok());
+                assert!(behavior.SetSelection(2).is_ok());
+                assert!(behavior.Abort().is_ok());
             }
             // set_on_finalize must not panic
             mgr.set_on_finalize(|_| {});
+        }
+
+        // Test normal behavior calls directly
+        unsafe {
+            *mgr.data.candidates.borrow_mut() = vec!["字0".to_string(), "字1".to_string(), "字2".to_string()];
+            let behavior = mgr.ui_element.cast::<ITfCandidateListUIElementBehavior>().unwrap();
+            assert!(behavior.SetSelection(2).is_ok());
+            assert_eq!(mgr.data.selection_index.get(), 2);
+            assert!(behavior.Finalize().is_ok());
+            assert_eq!(mgr.take_finalized_candidate(), Some("字2".to_string()));
+            assert_eq!(mgr.take_finalized_candidate(), None);
+
+            assert!(behavior.SetSelection(1).is_ok());
+            assert!(behavior.Abort().is_ok());
+            assert_eq!(mgr.take_finalized_candidate(), None);
         }
     }
 }

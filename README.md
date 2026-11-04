@@ -15,13 +15,18 @@
   * **64 位元核心**：`keykey_tsf.dll` 注入原生 64 位元應用程式（如 Edge、Chrome、VS Code、Windows 記事本、Office 64-bit）。
   * **32 位元核心**：`keykey_tsf_32.dll` 注入 32 位元 WOW64 應用程式（如 Steam、舊型企業軟體、32 位元遊戲），徹底解決「32 位元應用程式打不出字或輸入法失效」的常見問題。
   * **COM 註冊雙重重定向**：同一個 CLSID 同步登記於 `HKCR\CLSID` 與 `HKCR\WOW6432Node\CLSID`。
-* **Windows 11 原生候選字選單整合 (`ITfCandidateListUIElement`)**：
-  * 不使用傳統自建 Win32 頂層彈出視窗，改由 Windows 11 Shell 系統直接渲染原生 Fluent 候選字清單。
-  * 自動依附游標位置、自動支援深淺色主題切換、高 DPI 縮放，並原生支援滑鼠點選字詞即時上字。
-* **純標準 TSF 編輯作業 (`ITfEditSession`)**：
+* **雙軌候選字視窗架構（Win11 原生 Shell + 純 Rust 自繪相容視窗）**：
+  * **Windows 11 原生 Shell 整合 (`ITfCandidateListUIElement`)**：於現代 XAML / UWP 應用程式直接由系統渲染 Fluent 候選字清單。
+  * **純 Rust 自繪 Fluent 懸浮視窗 (`CustomCandidateWindow`)**：針對舊式 Win32 應用程式、傳統終端機、控制台或未啟動 Modern Shell 的遊戲，以 100% 純 Rust + GDI 雙緩衝無閃爍自繪，套用 Windows 11 DWM 圓角（`DWMWCP_ROUND`）、陰影與膠囊型選取效果，具備 `WS_EX_NOACTIVATE | WS_EX_TOPMOST` 絕對不搶焦點保證，徹底解決同類專案在 Win11「看不到候選字視窗」的問題。
+  * **智慧游標追蹤**：支援 TSF `GetTextExt` -> Win32 Caret (`GetGUIThreadInfo`) -> 游標座標三層式精確定位，並具備螢幕邊界自動翻轉（避免超出螢幕底部或邊緣）。
+* **內建現代擴充詞庫（整合 polobread/KeyKey 專業分類詞庫）**：
+  * 除了原版 Yahoo! KeyKey 單字表，內建編譯 3,925 筆現代專業與生活詞庫（涵蓋人工智慧、軟體開發、半導體、資訊安全、金融商務與現代高頻生活詞彙）。
+  * 支援多字詞音節編碼查詢與首字音節關聯候選，開箱即用免手動匯入。
+* **純標準 TSF 編輯作業 (`ITfEditSession`) 與零當機保證 (Anti-Hang Architecture)**：
   * 徹底摒棄 `SendInput`、`keybd_event` 或偽造 `WM_CHAR` 等易遭攔截或丟字的落後做法。
   * 透過同步讀寫鎖 (`TF_ES_READWRITE | TF_ES_SYNC`) 直接操作文件文字範圍 (`ITfRange`)，文字上字 100% 準確不丟字。
   * 退格鍵（Backspace）於注音拼音期間精確遞減聲母、韻母、聲調，清空時自然透傳至目標程式，杜絕雙重刪除或刪字異常。
+  * 所有 COM 介面與視窗回呼皆以 `catch_unwind` 與非阻塞鎖全面防護，通過 10,000 次急促擊鍵與混沌注入壓力測試，絕不掛死主應用程式。
 * **無縫中英切換與系統匣狀態同步**：
   * 按下單獨的 <kbd>Shift</kbd> 鍵瞬切「中文（注音）」與「英文直通」。
   * 串接 `ITfCompartmentEventSink` 與 `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`，按下 Shift 或點擊工作列系統匣時，工作列的「中／英」圖示雙向即時同步。
@@ -34,14 +39,22 @@
 
 ## 詞庫與外部資料來源致謝 (References & Data Sources)
 
-本專案之字表、注音對應與詞庫架構奠基並參考以下開源資源：
+本專案之字表、注音對應與詞庫架構奠基並整合以下開源資源：
 
 1. **原版 Yahoo! 奇摩輸入法 (Yahoo! KeyKey)**:
    * 官方開源專案版本：`YahooKeyKey-Source-1.1.2528` (New BSD License)。
-   * 本專案的核心字詞表與對照資料（如 `bpmf.cin`）直接取自原版 Yahoo! KeyKey。
+   * 本專案的核心基礎注音字表（`bpmf.cin`）與補充詞庫對照表（`Keke-AddBpmf.txt`）直接源自原版 Yahoo! KeyKey。
    * 官方網站歷史存檔：[Yahoo! KeyKey](http://tw.media.yahoo.com/keykey/)。
-2. **外部詞庫參考資源 (Optional Modern Reference)**:
-   * **[polobread/KeyKey](https://github.com/polobread/KeyKey)**：社群另一開源復刻專案。**本專案目前未直接引用其程式碼或字詞庫**（目前核心 100% 來自原版 Yahoo! KeyKey 與純 Rust 引擎），此處列出作為未來擴充現代新詞詞庫（如 McBopomofo 小麥注音詞表及分類詞庫）之參考資源。
+2. **現代專業分類詞庫整合來源 ([polobread/KeyKey](https://github.com/polobread/KeyKey))**:
+   * 參考並整合社群專案 `polobread/KeyKey` 所收錄之現代台灣專業用語詞庫集合（`chichi77Collection`），包含：
+     * `phrase.ai-data-science.tsv` (人工智慧與資料科學詞庫)
+     * `phrase.software.tsv` (軟體工程與資訊技術詞庫)
+     * `phrase.semiconductor.tsv` (半導體製造與硬體產業詞庫)
+     * `phrase.network-security.tsv` (網路通訊與資訊安全詞庫)
+     * `phrase.finance.tsv` (現代金融與加密貨幣詞庫)
+     * `phrase.business.tsv` (企業商務與管理名詞)
+     * `phrase.general.tsv` (台灣現代高頻生活常用語)
+   * 由自動化工具 [`scripts/generate_phrases.py`](file:///D:/dev/KeyKey/scripts/generate_phrases.py) 將上述詞庫與注音轉換為大千式 CIN 編碼，編譯為 [`crates/keykey-core/data/phrases.cin`](file:///D:/dev/KeyKey/crates/keykey-core/data/phrases.cin) 並內建於輸入法核心，啟動時自動與基礎字表雙向無縫合併。
 3. **中央研究院語言學研究所平衡語料庫 (Sinica Corpus)**:
    * 台灣繁體中文詞頻與詞庫關聯資料基礎。
 4. **OpenVanilla 專案 (OpenVanilla Input Method Project)**:

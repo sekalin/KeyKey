@@ -1,6 +1,7 @@
 //! KeyKey Windows TSF (Text Services Framework) Text Input Processor (TIP)
 
 pub mod candidate_ui;
+pub mod candidate_window;
 pub mod composition;
 pub mod register;
 
@@ -33,7 +34,8 @@ pub const GUID_KEYKEY_PROFILE: GUID =
 pub static DLL_INSTANCE: AtomicIsize = AtomicIsize::new(0);
 
 // Embedded default Bopomofo table from DataTables/bpmf.cin
-const DEFAULT_BPMF_CIN: &[u8] =
+#[allow(dead_code)]
+pub const DEFAULT_BPMF_CIN: &[u8] =
     include_bytes!("../../../YahooKeyKey-Source-1.1.2528/DataTables/bpmf.cin");
 
 #[no_mangle]
@@ -94,10 +96,8 @@ pub struct KeyKeyTip {
 
 impl KeyKeyTip {
     pub fn new() -> Self {
-        // Load default CinTable from embedded bpmf.cin
-        let cin_table = CinTable::load_from_reader(DEFAULT_BPMF_CIN)
-            .unwrap_or_else(|_| CinTable::new());
-
+        // Load default combined CinTable (Bopomofo + Modern Phrases)
+        let cin_table = CinTable::load_default();
         let engine = KeyKeyEngine::new(cin_table);
         Self::with_engine(Rc::new(RefCell::new(engine)))
     }
@@ -527,7 +527,16 @@ impl KeyKeyTip_Impl {
                                         .as_ref()
                                         .map(|cl| cl.all_candidates().to_vec())
                                         .unwrap_or_default();
-                                    let _ = self.candidate_ui.show(tm, all_cands, page);
+                                    let comp_lock = self.active_composition.try_borrow().ok();
+                                    let comp_ref = comp_lock.as_ref().and_then(|c| c.as_ref());
+                                    let _ = self.candidate_ui.show(
+                                        tm,
+                                        all_cands,
+                                        page,
+                                        Some(context),
+                                        comp_ref,
+                                        0,
+                                    );
                                 }
                             }
                         }
