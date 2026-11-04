@@ -560,3 +560,136 @@ fn test_e2e_tsf_candidate_backspace_and_enter_handling() {
         assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
     }
 }
+
+
+#[test]
+fn test_e2e_tsf_continuous_typing_after_manual_candidate_selection() {
+    let harness = match TsfTestHarness::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    unsafe {
+        // --- 1. Type first syllable: ㄅ(1) ㄨ(j) ˋ(4) ---
+        let _ = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0));
+
+        let _ = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(b'J' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'J' as usize), LPARAM(0));
+
+        let _ = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(b'4' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'4' as usize), LPARAM(0));
+
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_some());
+
+        // Check candidate items
+        let initial_cand0 = harness.tip_raw.engine.borrow().candidate_list.as_ref().unwrap().select_by_index(0).unwrap().to_string();
+        let initial_cand1 = harness.tip_raw.engine.borrow().candidate_list.as_ref().unwrap().select_by_index(1).unwrap().to_string();
+
+        // --- 2. Manually select candidate #2 (key '2') ---
+        let test_sel = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(b'2' as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_sel, BOOL(1));
+
+        let down_sel = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'2' as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_sel, BOOL(1));
+
+        // Candidate UI must close, engine syllable reset
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
+        assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
+
+        // --- 3. CRITICAL: Continue typing immediately after manual candidate selection ---
+        // Type second syllable: ㄅ(1) ㄨ(j) ˋ(4)
+        let test_c1 = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_c1, BOOL(1), "Next keystroke after candidate selection must NOT be blocked");
+
+        let down_c1 = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_c1, BOOL(1));
+
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'J' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'4' as usize), LPARAM(0));
+
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_some());
+
+        // --- 4. Verify MRU Candidate Rearrangement ---
+        // The previously manually selected candidate (initial_cand1) must now be promoted to index 0!
+        let new_cand0 = harness.tip_raw.engine.borrow().candidate_list.as_ref().unwrap().select_by_index(0).unwrap().to_string();
+        assert_eq!(new_cand0, initial_cand1, "Manually selected word must be rearranged to candidate #1");
+
+        // The previous first candidate is now at index 1
+        let new_cand1 = harness.tip_raw.engine.borrow().candidate_list.as_ref().unwrap().select_by_index(1).unwrap().to_string();
+        assert_eq!(new_cand1, initial_cand0);
+
+        // --- 5. Test Continuous Typing without manual selection ---
+        // When candidate window is showing, directly pressing next consonant 'S' (ㄉ)
+        // must auto-commit candidate #1 and start the next syllable!
+        let test_cont = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(b'S' as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_cont, BOOL(1));
+
+        let down_cont = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'S' as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_cont, BOOL(1));
+
+        // Candidate list should be closed, and engine has 'ㄉ' ('s') in progress!
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
+        assert_eq!(harness.tip_raw.engine.borrow().syllable.to_cin_code(), "s");
+
+        // --- 6. Complete and commit with Space ---
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'J' as usize), LPARAM(0));
+        let _ = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'4' as usize), LPARAM(0));
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_some());
+
+        // Pressing Space should select Candidate #1
+        let test_sp = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(VK_SPACE.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_sp, BOOL(1));
+        let down_sp = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(VK_SPACE.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_sp, BOOL(1));
+
+        assert!(harness.tip_raw.engine.borrow().candidate_list.is_none());
+        assert!(harness.tip_raw.engine.borrow().syllable.is_empty());
+    }
+}
+
+#[test]
+fn test_e2e_tsf_caps_lock_mode_toggle_and_tray_sync() {
+    let harness = match TsfTestHarness::new() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    unsafe {
+        // Initialize compartment to match initial Bopomofo mode
+        harness.tip_raw.set_openclose_compartment(true);
+        assert_eq!(harness.tip_raw.engine.borrow().mode, InputMode::Bopomofo);
+        assert_eq!(harness.tip_raw.get_openclose_compartment(), Some(true));
+
+        // 1. Press Caps Lock -> toggles to English mode
+        let test_caps1 = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_caps1, BOOL(1));
+
+        let down_caps1 = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_caps1, BOOL(1));
+
+        assert_eq!(harness.tip_raw.engine.borrow().mode, InputMode::English);
+        assert_eq!(harness.tip_raw.get_openclose_compartment(), Some(false), "Taskbar tray must update to English ('英')");
+
+        // While in English mode, normal keystrokes are passed directly to app (BOOL 0)
+        let test_eng = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(b'A' as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_eng, BOOL(0));
+
+        let down_eng = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(b'A' as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_eng, BOOL(0));
+
+        // 2. Press Caps Lock again while in English mode -> toggles back to Bopomofo mode
+        let test_caps2 = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_caps2, BOOL(1), "Caps Lock must still be intercepted when in English mode");
+
+        let down_caps2 = harness.key_sink.OnKeyDown(Some(&harness.context), WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)).unwrap();
+        assert_eq!(down_caps2, BOOL(1));
+
+        assert_eq!(harness.tip_raw.engine.borrow().mode, InputMode::Bopomofo);
+        assert_eq!(harness.tip_raw.get_openclose_compartment(), Some(true), "Taskbar tray must update to Chinese ('中')");
+
+        // Now keystrokes are intercepted by Bopomofo engine again
+        let test_bpmf = harness.key_sink.OnTestKeyDown(Some(&harness.context), WPARAM(b'1' as usize), LPARAM(0)).unwrap();
+        assert_eq!(test_bpmf, BOOL(1));
+    }
+}

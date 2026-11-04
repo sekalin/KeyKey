@@ -123,6 +123,11 @@ impl KeyKeyTip {
                                 if let Ok(context) = doc_mgr.GetTop() {
                                     let text = cand_mgr_clone.data.candidates.try_borrow().ok().and_then(|c| c.get(idx as usize).cloned());
                                     if let Some(text) = text {
+                                        if let Ok(mut eng) = eng_clone.try_borrow_mut() {
+                                            let code = eng.syllable.to_cin_code();
+                                            eng.record_candidate_selection(&code, &text);
+                                            eng.reset();
+                                        }
                                         let session: ITfEditSession = KeyKeyEditSession::new(
                                             context.clone(),
                                             EditAction::Commit(text),
@@ -379,15 +384,20 @@ impl KeyKeyTip_Impl {
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
+        let vk = wparam.0 as u16;
+        if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
+            return Ok(BOOL(0));
+        }
+
+        // Caps Lock toggles between Chinese (Bopomofo) and English mode
+        if vk == VK_CAPITAL.0 {
+            return Ok(BOOL(1));
+        }
+
         let Ok(engine) = self.engine.try_borrow() else {
             return Ok(BOOL(0));
         };
         if engine.mode == keykey_core::engine::InputMode::English {
-            return Ok(BOOL(0));
-        }
-
-        let vk = wparam.0 as u16;
-        if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
             return Ok(BOOL(0));
         }
 
@@ -445,6 +455,34 @@ impl KeyKeyTip_Impl {
             return Ok(BOOL(0));
         }
         self.shift_alone.set(false);
+
+        // Caps Lock toggles between Chinese (Bopomofo) and English mode
+        if vk == VK_CAPITAL.0 {
+            if let Ok(mut engine) = self.engine.try_borrow_mut() {
+                if engine.candidate_list.is_some() {
+                    if let Ok(tm_lock) = self.thread_mgr.try_borrow() {
+                        if let Some(ref tm) = *tm_lock {
+                            let _ = self.candidate_ui.close(tm);
+                        }
+                    }
+                }
+                engine.reset();
+                let new_mode = engine.toggle_mode();
+                self.set_openclose_compartment(new_mode == keykey_core::engine::InputMode::Bopomofo);
+            }
+            if let Some(context) = pic {
+                let session: ITfEditSession = KeyKeyEditSession::new(
+                    context.clone(),
+                    EditAction::Cancel,
+                    self.active_composition.clone(),
+                    None,
+                ).into();
+                unsafe {
+                    let _ = context.RequestEditSession(self.client_id.get(), &session, TF_ES_READWRITE | TF_ES_SYNC);
+                }
+            }
+            return Ok(BOOL(1));
+        }
 
         let Ok(mut engine) = self.engine.try_borrow_mut() else {
             return Ok(BOOL(0));
@@ -545,17 +583,6 @@ impl KeyKeyTip_Impl {
                                     let _ = self.candidate_ui.close(tm);
                                 }
                             }
-                            if engine.syllable.is_empty() {
-                                let session: ITfEditSession = KeyKeyEditSession::new(
-                                    context.clone(),
-                                    EditAction::Cancel,
-                                    self.active_composition.clone(),
-                                    sink.clone(),
-                                ).into();
-                                unsafe {
-                                    let _ = context.RequestEditSession(tid, &session, TF_ES_READWRITE | TF_ES_SYNC);
-                                }
-                            }
                         }
                         _ => {}
                     }
@@ -599,9 +626,13 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
     fn OnTestKeyUp(
         &self,
         _pic: Option<&ITfContext>,
-        _wparam: WPARAM,
+        wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
+        let vk = wparam.0 as u16;
+        if vk == VK_CAPITAL.0 {
+            return Ok(BOOL(1));
+        }
         Ok(BOOL(0))
     }
 
@@ -613,6 +644,9 @@ impl ITfKeyEventSink_Impl for KeyKeyTip_Impl {
     ) -> Result<BOOL> {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let vk = wparam.0 as u16;
+            if vk == VK_CAPITAL.0 {
+                return Ok(BOOL(1));
+            }
             if vk == VK_SHIFT.0 || vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 {
                 if self.shift_alone.replace(false) {
                     if let Ok(mut engine) = self.engine.try_borrow_mut() {
@@ -972,6 +1006,16 @@ mod tests {
                         let kd_punc_cands = key_sink.OnKeyDown(Some(ctx), WPARAM(VK_OEM_5.0 as usize), LPARAM(0));
                         assert_eq!(kd_punc_cands.unwrap(), BOOL(1));
 
+                        // 7e. Caps Lock while candidate list is active -> cancels candidates and switches mode
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'1' as usize), LPARAM(0));
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'J' as usize), LPARAM(0));
+                        let _ = key_sink.OnKeyDown(Some(ctx), WPARAM(b'4' as usize), LPARAM(0));
+                        let kd_caps = key_sink.OnKeyDown(Some(ctx), WPARAM(VK_CAPITAL.0 as usize), LPARAM(0));
+                        assert_eq!(kd_caps.unwrap(), BOOL(1));
+                        // Toggle back to Bopomofo
+                        let kd_caps_back = key_sink.OnKeyDown(Some(ctx), WPARAM(VK_CAPITAL.0 as usize), LPARAM(0));
+                        assert_eq!(kd_caps_back.unwrap(), BOOL(1));
+
                         // 8. Test OnCompositionTerminated with active thread_mgr
                         let comp_sink: ITfCompositionSink = processor.cast().unwrap();
                         assert!(comp_sink.OnCompositionTerminated(0, None).is_ok());
@@ -1032,6 +1076,44 @@ mod tests {
         let bad_guid = GUID::from_u128(0x12345678_0000_0000_0000_000000000000);
         assert!(unsafe { comp_sink.OnChange(&bad_guid) }.is_ok());
         assert!(unsafe { comp_sink.OnChange(std::ptr::null()) }.is_ok());
+    }
+
+    #[test]
+    fn test_caps_lock_mode_toggle() {
+        let default_cin = CinTable::load_from_reader(DEFAULT_BPMF_CIN).unwrap();
+        let engine = Rc::new(RefCell::new(KeyKeyEngine::new(default_cin)));
+        let tip = KeyKeyTip::with_engine(engine.clone());
+        let key_sink: ITfKeyEventSink = tip.into();
+
+        assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::Bopomofo);
+
+        // 1. Press Caps Lock -> OnTestKeyDown must return BOOL(1) (intercepted)
+        assert_eq!(unsafe { key_sink.OnTestKeyDown(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(1));
+        // OnKeyDown of Caps Lock toggles to English mode!
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(1));
+        assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::English);
+
+        // While in English mode, regular letters pass through (BOOL 0)
+        assert_eq!(unsafe { key_sink.OnTestKeyDown(None, WPARAM(b'A' as usize), LPARAM(0)) }.unwrap(), BOOL(0));
+
+        // While in English mode, Caps Lock is STILL intercepted so user can switch back!
+        assert_eq!(unsafe { key_sink.OnTestKeyDown(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(1));
+        // OnKeyDown of Caps Lock toggles back to Bopomofo mode!
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(1));
+        assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::Bopomofo);
+
+        // Test Caps Lock KeyUp
+        assert_eq!(unsafe { key_sink.OnTestKeyUp(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(1));
+        assert_eq!(unsafe { key_sink.OnKeyUp(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(1));
+
+        // Test Caps Lock when candidate list is open (resets candidate UI and composition)
+        engine.borrow_mut().handle_key(keykey_core::engine::KeyCode::Char('1'));
+        engine.borrow_mut().handle_key(keykey_core::engine::KeyCode::Char('j'));
+        engine.borrow_mut().handle_key(keykey_core::engine::KeyCode::Char('4'));
+        assert!(engine.borrow().candidate_list.is_some());
+        assert_eq!(unsafe { key_sink.OnKeyDown(None, WPARAM(VK_CAPITAL.0 as usize), LPARAM(0)) }.unwrap(), BOOL(1));
+        assert!(engine.borrow().candidate_list.is_none());
+        assert_eq!(engine.borrow().mode, keykey_core::engine::InputMode::English);
     }
 
     #[test]

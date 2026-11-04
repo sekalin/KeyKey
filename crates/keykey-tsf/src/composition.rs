@@ -67,10 +67,18 @@ impl KeyKeyEditSession_Impl {
                     return Ok(());
                 };
 
-                if comp_lock.is_none() {
-                    if text_wide.is_empty() {
-                        return Ok(());
+                if text_wide.is_empty() {
+                    if let Some(comp) = comp_lock.take() {
+                        unsafe {
+                            let range = comp.GetRange()?;
+                            range.SetText(ec, 0, &[])?;
+                            comp.EndComposition(ec)?;
+                        }
                     }
+                    return Ok(());
+                }
+
+                if comp_lock.is_none() {
                     let mut selections = [TF_SELECTION::default(); 1];
                     let mut fetched = 0;
                     unsafe {

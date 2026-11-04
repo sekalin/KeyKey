@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::bopomofo::{classify_key, ComponentType, SyllableBuffer};
 use crate::candidate::CandidateList;
 use crate::cin::CinTable;
@@ -49,6 +51,7 @@ pub struct KeyKeyEngine {
     pub cin_table: CinTable,
     pub syllable: SyllableBuffer,
     pub candidate_list: Option<CandidateList>,
+    pub user_freq: HashMap<String, Vec<String>>,
 }
 
 impl KeyKeyEngine {
@@ -58,6 +61,7 @@ impl KeyKeyEngine {
             cin_table,
             syllable: SyllableBuffer::new(),
             candidate_list: None,
+            user_freq: HashMap::new(),
         }
     }
 
@@ -75,6 +79,38 @@ impl KeyKeyEngine {
         self.candidate_list = None;
     }
 
+    /// Look up candidates for a Bopomofo syllable code, prioritizing user-frequently-used candidates (MRU)
+    pub fn lookup_candidates(&self, code: &str) -> Option<Vec<String>> {
+        let base_cands = self.cin_table.lookup(code)?;
+        if let Some(user_ordered) = self.user_freq.get(code) {
+            let mut result = Vec::with_capacity(base_cands.len());
+            // 1. Add user-selected candidates in MRU order (if they belong to this syllable)
+            for cand in user_ordered {
+                if base_cands.contains(cand) && !result.contains(cand) {
+                    result.push(cand.clone());
+                }
+            }
+            // 2. Append the rest of standard candidates
+            for cand in base_cands {
+                if !result.contains(cand) {
+                    result.push(cand.clone());
+                }
+            }
+            Some(result)
+        } else {
+            Some(base_cands.to_vec())
+        }
+    }
+
+    /// Record a candidate selection to promote it to highest frequency (MRU)
+    pub fn record_candidate_selection(&mut self, code: &str, candidate: &str) {
+        let list = self.user_freq.entry(code.to_string()).or_default();
+        if let Some(pos) = list.iter().position(|c| c == candidate) {
+            list.remove(pos);
+        }
+        list.insert(0, candidate.to_string());
+    }
+
     /// Process a keystroke and return the appropriate action.
     pub fn handle_key(&mut self, key: KeyCode) -> Vec<EngineAction> {
         if self.mode == InputMode::English {
@@ -86,19 +122,30 @@ impl KeyKeyEngine {
             match key {
                 KeyCode::Char(c) if self.cin_table.selkey.contains(c) => {
                     if let Some(selected) = candidates.select_by_key(c).map(|s| s.to_string()) {
+                        let code = self.syllable.to_cin_code();
+                        self.record_candidate_selection(&code, &selected);
                         self.reset();
                         return vec![
-                            EngineAction::HideCandidates,
-                            EngineAction::UpdateComposition {
-                                display_text: String::new(),
-                                cursor_pos: 0,
-                            },
                             EngineAction::Commit(selected),
+                            EngineAction::HideCandidates,
                         ];
                     }
                     return vec![EngineAction::Consumed];
                 }
-                KeyCode::Space | KeyCode::Down | KeyCode::PageDown => {
+                KeyCode::Space => {
+                    // Space selects candidate 1 (default candidate)
+                    if let Some(selected) = candidates.select_by_index(0).map(|s| s.to_string()) {
+                        let code = self.syllable.to_cin_code();
+                        self.record_candidate_selection(&code, &selected);
+                        self.reset();
+                        return vec![
+                            EngineAction::Commit(selected),
+                            EngineAction::HideCandidates,
+                        ];
+                    }
+                    return vec![EngineAction::Consumed];
+                }
+                KeyCode::Down | KeyCode::PageDown => {
                     if candidates.next_page() {
                         let items: Vec<(char, String)> = candidates
                             .current_page_items()
@@ -161,15 +208,36 @@ impl KeyKeyEngine {
                     let display_text = self.cin_table.keys_to_symbols(&self.syllable.to_cin_code());
                     self.reset();
                     return vec![
-                        EngineAction::HideCandidates,
-                        EngineAction::UpdateComposition {
-                            display_text: String::new(),
-                            cursor_pos: 0,
-                        },
                         EngineAction::Commit(display_text),
+                        EngineAction::HideCandidates,
                     ];
                 }
-                _ => return vec![EngineAction::Consumed],
+                KeyCode::Char(c) => {
+                    let comp = classify_key(c);
+                    if matches!(
+                        comp,
+                        ComponentType::Consonant | ComponentType::Medial | ComponentType::Rhyme
+                    ) {
+                        // Continuous typing: auto-commit Candidate 1 and start next syllable!
+                        let selected = candidates.select_by_index(0).map(|s| s.to_string()).unwrap_or_default();
+                        let code = self.syllable.to_cin_code();
+                        self.record_candidate_selection(&code, &selected);
+                        self.reset();
+                        let _ = self.syllable.feed_key(c);
+                        let next_code = self.syllable.to_cin_code();
+                        let display_text = self.cin_table.keys_to_symbols(&next_code);
+                        let cursor_pos = display_text.chars().count();
+                        return vec![
+                            EngineAction::Commit(selected),
+                            EngineAction::HideCandidates,
+                            EngineAction::UpdateComposition {
+                                display_text,
+                                cursor_pos,
+                            },
+                        ];
+                    }
+                    return vec![EngineAction::Consumed];
+                }
             }
         }
 
@@ -178,10 +246,9 @@ impl KeyKeyEngine {
             KeyCode::Char(c) => {
                 if self.syllable.feed_key(c).unwrap_or(false) {
                     if self.syllable.is_complete() {
-                        // Look up candidates
+                        // Look up candidates with MRU frequency reordering
                         let code = self.syllable.to_cin_code();
-                        if let Some(candidates) = self.cin_table.lookup(&code) {
-                            let cand_vec: Vec<String> = candidates.to_vec();
+                        if let Some(cand_vec) = self.lookup_candidates(&code) {
                             let cand_list = CandidateList::new(cand_vec, &self.cin_table.selkey);
                             let items: Vec<(char, String)> = cand_list
                                 .current_page_items()
@@ -308,12 +375,8 @@ impl KeyKeyEngine {
                     let raw = self.cin_table.keys_to_symbols(&code);
                     self.reset();
                     vec![
-                        EngineAction::UpdateComposition {
-                            display_text: String::new(),
-                            cursor_pos: 0,
-                        },
-                        EngineAction::HideCandidates,
                         EngineAction::Commit(raw),
+                        EngineAction::HideCandidates,
                     ]
                 } else {
                     vec![EngineAction::Ignored]
@@ -336,6 +399,7 @@ mod tests {
 1 ㄅ
 j ㄨ
 4 ˋ
+z ㄈ
 %keyname end
 %chardef begin
 1j4 不
@@ -490,8 +554,8 @@ j ㄨ
         assert_eq!(engine.handle_key(KeyCode::Down), vec![EngineAction::Consumed]);
         assert_eq!(engine.handle_key(KeyCode::Up), vec![EngineAction::Consumed]);
 
-        // Other key when candidate list open
-        assert_eq!(engine.handle_key(KeyCode::Char('z')), vec![EngineAction::Consumed]);
+        // Other non-bopomofo key when candidate list open
+        assert_eq!(engine.handle_key(KeyCode::Char('!')), vec![EngineAction::Consumed]);
 
         // Escape from candidate list hides candidates and keeps composition
         let actions = engine.handle_key(KeyCode::Escape);
@@ -621,13 +685,103 @@ j ㄨ
         assert_eq!(
             enter_actions,
             vec![
-                EngineAction::HideCandidates,
-                EngineAction::UpdateComposition {
-                    display_text: String::new(),
-                    cursor_pos: 0,
-                },
                 EngineAction::Commit("ㄅㄨˋ".to_string()),
+                EngineAction::HideCandidates,
             ]
         );
+    }
+
+    #[test]
+    fn test_engine_candidate_mru_rearrangement() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        // 1j4 has 3 candidates ('1': 不, '2': 布, '3': 部)
+        // First lookup: candidate 1 is '不'
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        let actions1 = engine.handle_key(KeyCode::Char('4'));
+        if let Some(EngineAction::ShowCandidates { candidates, .. }) = actions1.iter().find(|a| matches!(a, EngineAction::ShowCandidates { .. })) {
+            assert_eq!(candidates[0].1, "不");
+            assert_eq!(candidates[1].1, "布");
+            assert_eq!(candidates[2].1, "部");
+        } else {
+            panic!("Expected ShowCandidates");
+        }
+
+        // Manually select candidate '2' ('布')
+        let select_actions = engine.handle_key(KeyCode::Char('2'));
+        assert_eq!(
+            select_actions,
+            vec![
+                EngineAction::Commit("布".to_string()),
+                EngineAction::HideCandidates,
+            ]
+        );
+
+        // Second lookup for same syllable 1j4 (ㄅㄨˋ):
+        // '布' MUST now be rearranged to candidate #1!
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        let actions2 = engine.handle_key(KeyCode::Char('4'));
+        if let Some(EngineAction::ShowCandidates { candidates, .. }) = actions2.iter().find(|a| matches!(a, EngineAction::ShowCandidates { .. })) {
+            assert_eq!(candidates[0].1, "布", "布 should be promoted to #1 candidate (MRU)");
+            assert_eq!(candidates[1].1, "不");
+            assert_eq!(candidates[2].1, "部");
+        } else {
+            panic!("Expected ShowCandidates");
+        }
+    }
+
+    #[test]
+    fn test_engine_continuous_typing_on_candidates() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        // Type '1' 'j' '4' -> candidate window opens
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        engine.handle_key(KeyCode::Char('4'));
+        assert!(engine.candidate_list.is_some());
+
+        // Now without pressing 1-9 or space, immediately type consonant 'z' (ㄈ) for next syllable
+        let cont_actions = engine.handle_key(KeyCode::Char('z'));
+        // Candidate 1 ('不') should be committed, candidate window closed, and new composition started with 'ㄈ'
+        assert_eq!(
+            cont_actions,
+            vec![
+                EngineAction::Commit("不".to_string()),
+                EngineAction::HideCandidates,
+                EngineAction::UpdateComposition {
+                    display_text: "ㄈ".to_string(),
+                    cursor_pos: 1,
+                },
+            ]
+        );
+        assert!(engine.candidate_list.is_none());
+        assert_eq!(engine.syllable.to_cin_code(), "z");
+    }
+
+    #[test]
+    fn test_engine_space_selects_first_candidate() {
+        let table = CinTable::load_from_reader(TEST_CIN.as_bytes()).unwrap();
+        let mut engine = KeyKeyEngine::new(table);
+
+        engine.handle_key(KeyCode::Char('1'));
+        engine.handle_key(KeyCode::Char('j'));
+        engine.handle_key(KeyCode::Char('4')); // Candidates: 不, 布, 部
+        assert!(engine.candidate_list.is_some());
+
+        // Pressing Space should select the default first candidate ("不")
+        let space_actions = engine.handle_key(KeyCode::Space);
+        assert_eq!(
+            space_actions,
+            vec![
+                EngineAction::Commit("不".to_string()),
+                EngineAction::HideCandidates,
+            ]
+        );
+        assert!(engine.candidate_list.is_none());
+        assert!(engine.syllable.is_empty());
     }
 }

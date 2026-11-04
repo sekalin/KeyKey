@@ -104,8 +104,8 @@ impl CustomCandidateWindow {
                 WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                 0,
                 0,
-                320,
-                46,
+                360,
+                54,
                 None,
                 None,
                 hinstance,
@@ -186,25 +186,32 @@ impl CustomCandidateWindow {
     }
 
     fn calculate_dimensions(&self) -> (i32, i32) {
+        let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(self.hwnd) };
+        let dpi = if dpi == 0 { 96 } else { dpi };
+        let scale = dpi as f32 / 96.0;
+        let win_height = (54.0 * scale).round() as i32;
+
         let Ok(data) = self.data.try_borrow() else {
-            return (320, 46);
+            return (((320.0 * scale).round() as i32), win_height);
         };
 
         let start = data.current_page as usize * data.page_size;
         let page_cands: Vec<&String> = data.candidates.iter().skip(start).take(data.page_size).collect();
 
         // Base width calculation: padding + items + page counter
-        let mut est_width = 24i32;
+        let mut est_width = (24.0 * scale).round() as i32;
         for (idx, cand) in page_cands.iter().enumerate() {
-            // "1. 候選字 "
+            // Index number + candidate text + padding
             let char_len = cand.chars().count() as i32;
-            est_width += 36 + char_len * 18;
+            let item_w = ((42 + char_len * 22) as f32 * scale).round() as i32;
+            est_width += item_w;
             if idx < page_cands.len() - 1 {
-                est_width += 8;
+                est_width += (8.0 * scale).round() as i32;
             }
         }
-        est_width += 60; // page indicator space
-        (est_width.max(260), 46)
+        est_width += (64.0 * scale).round() as i32; // page indicator space
+        let min_width = (280.0 * scale).round() as i32;
+        (est_width.max(min_width), win_height)
     }
 
     fn position_and_display(
@@ -390,9 +397,17 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
     FrameRect(mem_dc, &client_rc, border_brush);
     let _ = DeleteObject(border_brush);
 
-    // Font: Microsoft JhengHei UI
+    // DPI-scaled font sizes and layout
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) };
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    let scale = dpi as f32 / 96.0;
+
+    let font_height = (22.0 * scale).round() as i32;
+    let key_font_height = (15.0 * scale).round() as i32;
+
+    // Font: Microsoft JhengHei UI for Candidate Text (22px * scale)
     let font = CreateFontW(
-        18,
+        font_height,
         0,
         0,
         0,
@@ -407,6 +422,25 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
         (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
         w!("Microsoft JhengHei UI"),
     );
+
+    // Font: Segoe UI for Selection Key Numbers (15px * scale)
+    let key_font = CreateFontW(
+        key_font_height,
+        0,
+        0,
+        0,
+        FW_SEMIBOLD.0 as i32,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        OUT_DEFAULT_PRECIS.0 as u32,
+        CLIP_DEFAULT_PRECIS.0 as u32,
+        CLEARTYPE_QUALITY.0 as u32,
+        (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
+        w!("Segoe UI"),
+    );
+
     let old_font = SelectObject(mem_dc, font);
     SetBkMode(mem_dc, TRANSPARENT);
 
@@ -428,22 +462,31 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
                 .map(|(i, s)| (i, s.clone()))
                 .collect();
 
-            let mut cur_x = 12i32;
+            let mut cur_x = (12.0 * scale).round() as i32;
 
             for (page_idx, cand) in page_cands {
                 let key_num = (page_idx + 1).to_string();
-                let full_label = format!("{}. {}", key_num, cand);
-                let wide_label: Vec<u16> = full_label.encode_utf16().chain(std::iter::once(0)).collect();
+                let key_str: Vec<u16> = format!("{}.", key_num).encode_utf16().collect();
+                let cand_wide: Vec<u16> = cand.encode_utf16().collect();
 
-                let mut size = SIZE::default();
-                let _ = GetTextExtentPoint32W(mem_dc, &wide_label[..wide_label.len() - 1], &mut size);
+                // Measure key number
+                SelectObject(mem_dc, key_font);
+                let mut key_size = SIZE::default();
+                let _ = GetTextExtentPoint32W(mem_dc, &key_str, &mut key_size);
 
-                let item_width = size.cx + 12;
+                // Measure candidate text
+                SelectObject(mem_dc, font);
+                let mut cand_size = SIZE::default();
+                let _ = GetTextExtentPoint32W(mem_dc, &cand_wide, &mut cand_size);
+
+                let pad_h = (8.0 * scale).round() as i32;
+                let pad_gap = (6.0 * scale).round() as i32;
+                let item_width = key_size.cx + pad_gap + cand_size.cx + (pad_h * 2);
                 let item_rc = RECT {
                     left: cur_x,
-                    top: 6,
+                    top: (5.0 * scale).round() as i32,
                     right: cur_x + item_width,
-                    bottom: height - 6,
+                    bottom: height - (5.0 * scale).round() as i32,
                 };
 
                 // Highlight selected candidate with active accent background pill
@@ -454,49 +497,50 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
                     let _ = DeleteObject(sel_brush);
                 }
 
-                // Render number index in secondary gray, text in dark
+                // Render number index in secondary gray
+                SelectObject(mem_dc, key_font);
                 SetTextColor(mem_dc, COLORREF(0x0064748B));
-                let mut key_str: Vec<u16> = format!("{}.", key_num).encode_utf16().chain(std::iter::once(0)).collect();
                 let mut key_rc = RECT {
-                    left: cur_x + 6,
-                    top: 12,
-                    right: cur_x + 24,
-                    bottom: height - 10,
+                    left: cur_x + pad_h,
+                    top: 0,
+                    right: cur_x + pad_h + key_size.cx,
+                    bottom: height,
                 };
-                let key_len = key_str.len() - 1;
-                let _ = DrawTextW(mem_dc, &mut key_str[..key_len], &mut key_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                let mut key_str_z = key_str.clone();
+                let _ = DrawTextW(mem_dc, &mut key_str_z, &mut key_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
+                // Render candidate text in dark
+                SelectObject(mem_dc, font);
                 SetTextColor(mem_dc, COLORREF(0x000F172A));
-                let mut cand_wide: Vec<u16> = cand.encode_utf16().chain(std::iter::once(0)).collect();
                 let mut text_rc = RECT {
-                    left: cur_x + 26,
-                    top: 12,
-                    right: cur_x + item_width,
-                    bottom: height - 10,
+                    left: key_rc.right + pad_gap,
+                    top: 0,
+                    right: key_rc.right + pad_gap + cand_size.cx,
+                    bottom: height,
                 };
-                let cand_len = cand_wide.len() - 1;
-                let _ = DrawTextW(mem_dc, &mut cand_wide[..cand_len], &mut text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                let mut cand_z = cand_wide.clone();
+                let _ = DrawTextW(mem_dc, &mut cand_z, &mut text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
                 d.item_rects.push(CandidateItemRect {
                     index: global_idx,
                     rect: item_rc,
                 });
 
-                cur_x += item_width + 8;
+                cur_x += item_width + (6.0 * scale).round() as i32;
             }
 
             // Draw page counter at right edge
             let page_text = format!("{}/{}", d.current_page + 1, total_pages);
-            let mut page_wide: Vec<u16> = page_text.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut page_wide: Vec<u16> = page_text.encode_utf16().collect();
+            SelectObject(mem_dc, key_font);
             SetTextColor(mem_dc, COLORREF(0x0094A3B8));
             let mut page_rc = RECT {
-                left: width - 56,
-                top: 12,
-                right: width - 8,
-                bottom: height - 10,
+                left: width - (60.0 * scale).round() as i32,
+                top: 0,
+                right: width - (10.0 * scale).round() as i32,
+                bottom: height,
             };
-            let page_len = page_wide.len() - 1;
-            let _ = DrawTextW(mem_dc, &mut page_wide[..page_len], &mut page_rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            let _ = DrawTextW(mem_dc, &mut page_wide, &mut page_rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         }
     }
 
@@ -504,6 +548,7 @@ unsafe fn paint_candidate_window(hwnd: HWND) {
 
     SelectObject(mem_dc, old_font);
     let _ = DeleteObject(font);
+    let _ = DeleteObject(key_font);
     SelectObject(mem_dc, old_bmp);
     let _ = DeleteObject(mem_bmp);
     let _ = DeleteDC(mem_dc);
@@ -538,7 +583,7 @@ mod tests {
 
         let (w, h) = win.calculate_dimensions();
         assert!(w >= 260);
-        assert_eq!(h, 46);
+        assert_eq!(h, 54);
 
         // 2. Update page
         win.update_page(0);
@@ -597,7 +642,7 @@ mod tests {
         win.show(vec![], 0, 0, None, None, 0);
         let (w, h) = win.calculate_dimensions();
         assert!(w >= 260);
-        assert_eq!(h, 46);
+        assert_eq!(h, 54);
 
         // Update page while visible
         win.update_page(1);
@@ -624,7 +669,7 @@ mod tests {
         // Test calculate_dimensions with borrow failure
         {
             let _lock = win.data.borrow_mut();
-            assert_eq!(win.calculate_dimensions(), (320, 46));
+            assert_eq!(win.calculate_dimensions(), (320, 54));
         }
 
         win.hide();
